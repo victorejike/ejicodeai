@@ -1,0 +1,183 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ejicode_postgres
+    environment:
+      POSTGRES_DB: ejicode_bdp
+      POSTGRES_USER: bdp_user
+      POSTGRES_PASSWORD: secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bdp_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ejicode_redis
+    command: redis-server --requirepass redis_password --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ejicode_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: always
+    environment:
+      - OLLAMA_NUM_PARALLEL=2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/generate", "-X", "POST"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ejicode_chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ALLOW_RESET=true
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    container_name: ejicode_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bdp_user:secure_password@postgres:5432/ejicode_bdp
+      REDIS_URL: redis://:redis_password@redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+      CHROMA_URL: http://chromadb:8000
+      API_URL: http://localhost:8000
+      APP_DEBUG: "true"
+      SECRET_KEY: dev-secret-key-change-in-production
+      LOG_LEVEL: INFO
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+    restart: always
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.agents
+    container_name: ejicode_celery_worker
+    command: celery -A backend.tasks.celery_app worker -Q agents,outreach,reporting -c 4 -l info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bdp_user:secure_password@postgres:5432/ejicode_bdp
+      REDIS_URL: redis://:redis_password@redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+      CHROMA_URL: http://chromadb:8000
+    depends_on:
+      - redis
+      - postgres
+      - ollama
+    volumes:
+      - ./backend:/app/backend
+      - ./agents:/app/agents
+    restart: always
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.agents
+    container_name: ejicode_celery_beat
+    command: celery -A backend.tasks.celery_app beat -l info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bdp_user:secure_password@postgres:5432/ejicode_bdp
+      REDIS_URL: redis://:redis_password@redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - ./backend:/app/backend
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infrastructure/docker/Dockerfile.frontend
+    container_name: ejicode_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ejicode_prometheus
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ejicode_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: always
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_models:
+  chroma_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: ejicode_network
