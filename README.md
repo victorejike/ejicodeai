@@ -129,23 +129,6 @@ pytest -q tests/unit/test_main.py tests/unit/test_auth.py
 
 ---
 
-## Environment Variables
-
-Copy `.env.example` to `.env` and configure:
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Postgres async URL (defaults to SQLite in dev) |
-| `REDIS_URL` | Redis connection string |
-| `SECRET_KEY` | JWT signing key — **change in production** |
-| `DEV_USERNAME` | Admin login username (default: `admin`) |
-| `DEV_PASSWORD` | Admin login password (default: `admin`) |
-| `OLLAMA_BASE_URL` | Ollama API URL |
-| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` | Email sending |
-| `IMAP_HOST` / `IMAP_USER` / `IMAP_PASSWORD` | Reply monitoring |
-| `HUNTER_IO_API_KEY` | Optional contact discovery |
-
----
 
 ## 
 
