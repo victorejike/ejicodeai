@@ -6,16 +6,9 @@ Autonomous multi-agent system for business development — discovers opportuniti
 
 ---
 
-## Admin Credentials
 
-| Field | Value |
-|-------|-------|
-| Username | `admin` |
-| Password | `admin` |
 
-Override in `.env` via `DEV_USERNAME` and `DEV_PASSWORD`.
 
----
 
 ## How to Run
 
@@ -65,12 +58,6 @@ docker-compose exec ollama ollama pull qwen2.5-coder:7b
 docker-compose exec ollama ollama pull nomic-embed-text:latest
 ```
 
-| Service | URL |
-|---------|-----|
-| API | http://localhost:8000/docs |
-| Frontend | http://localhost:3000 |
-| Grafana | http://localhost:3001 (admin / admin) |
-| Prometheus | http://localhost:9090 |
 
 ---
 
@@ -160,26 +147,7 @@ Copy `.env.example` to `.env` and configure:
 
 ---
 
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/auth/login` | Get JWT tokens |
-| POST | `/v1/auth/refresh` | Refresh access token |
-| GET | `/v1/auth/me` | Current user info |
-| GET/POST | `/v1/companies` | List / create companies |
-| GET/PATCH/DELETE | `/v1/companies/{id}` | Get / update / delete |
-| POST | `/v1/companies/{id}/research` | Queue research agent |
-| GET/POST | `/v1/opportunities` | List / create |
-| GET/POST | `/v1/contacts` | List / create |
-| GET/POST | `/v1/proposals` | List / create |
-| GET/POST | `/v1/outreach` | List / send outreach |
-| GET | `/v1/dashboard/summary` | Dashboard counts + recent activity |
-| GET | `/v1/agents/status` | Agent run status |
-| POST | `/v1/agents/{name}/trigger` | Manually trigger an agent |
-| GET | `/v1/reports` | Generated reports |
-| GET | `/health` | Service health check |
-| GET | `/docs` | Swagger UI |
+## 
 
 ---
 
