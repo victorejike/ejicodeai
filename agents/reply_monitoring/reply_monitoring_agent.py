@@ -29,24 +29,50 @@ class ReplyMonitoringAgent(BaseAgent):
     async def validate_input(self, input_data: dict) -> bool:
         return True  # since=None is valid; defaults to last 7 days
 
+    def _heuristic_classify(self, content: str) -> str:
+        lower = content.lower()
+        if any(w in lower for w in ["unsubscribe", "remove me", "opt out", "stop emailing", "take me off"]):
+            return "UNSUBSCRIBE"
+        if any(w in lower for w in ["mailer-daemon", "undeliverable", "delivery failure", "failure notice", "mailbox not found", "user unknown", "550 5."]):
+            return "BOUNCE"
+        if any(w in lower for w in ["out of the office", "out of office", "automatic reply", "on annual leave", "on vacation", "away from"]):
+            return "AUTO_REPLY"
+        if any(w in lower for w in ["not interested", "no thank", "pass on this", "not looking", "not a fit", "uninterested"]):
+            return "NOT_INTERESTED"
+        if any(w in lower for w in ["sounds good", "interested", "let's talk", "lets chat", "schedule a call", "set up a call", "calendly", "available tomorrow"]):
+            return "INTERESTED"
+        if any(w in lower for w in ["send more info", "more information", "share details", "pricing", "send deck", "case study"]):
+            return "REQUEST_INFO"
+        return "UNKNOWN"
+
     async def _classify_reply(self, content: str) -> str:
+        heuristic = self._heuristic_classify(content)
+        if heuristic in ["UNSUBSCRIBE", "BOUNCE", "AUTO_REPLY"]:
+            return heuristic
+
         prompt = (
-            "Classify this email reply into one of the categories: INTERESTED, NOT_INTERESTED, REQUEST_INFO, AUTO_REPLY, BOUNCE."
+            "Classify this email reply into one of the exact categories: INTERESTED, NOT_INTERESTED, REQUEST_INFO, AUTO_REPLY, BOUNCE, UNSUBSCRIBE."
             f"\nReply content:\n{content}"
         )
-        classification = await ai_service_tool.generate(prompt, system="You classify email responses.")
-        classification_text = classification.strip().upper()
-        if "INTERESTED" in classification_text:
-            return "INTERESTED"
-        if "NOT_INTERESTED" in classification_text or "NO" in classification_text:
-            return "NOT_INTERESTED"
-        if "REQUEST_INFO" in classification_text or "INFORMATION" in classification_text:
-            return "REQUEST_INFO"
-        if "AUTO_REPLY" in classification_text or "OUT OF OFFICE" in classification_text:
-            return "AUTO_REPLY"
-        if "BOUNCE" in classification_text or "UNDELIVERABLE" in classification_text:
-            return "BOUNCE"
-        return "UNKNOWN"
+        try:
+            classification = await ai_service_tool.generate(prompt, system="You classify email responses. Return only the single classification keyword.")
+            classification_text = classification.strip().upper()
+            if "UNSUBSCRIBE" in classification_text:
+                return "UNSUBSCRIBE"
+            if "INTERESTED" in classification_text:
+                return "INTERESTED"
+            if "NOT_INTERESTED" in classification_text or "NOT INTERESTED" in classification_text:
+                return "NOT_INTERESTED"
+            if "REQUEST_INFO" in classification_text or "INFORMATION" in classification_text:
+                return "REQUEST_INFO"
+            if "AUTO_REPLY" in classification_text or "OUT OF OFFICE" in classification_text:
+                return "AUTO_REPLY"
+            if "BOUNCE" in classification_text or "UNDELIVERABLE" in classification_text:
+                return "BOUNCE"
+        except Exception as e:
+            logger.warning("AI reply classification failed, using heuristic: %s", e)
+
+        return heuristic if heuristic != "UNKNOWN" else "UNKNOWN"
 
     async def validate_output(self, output_data: dict) -> bool:
         return bool(output_data.get("replies", []))

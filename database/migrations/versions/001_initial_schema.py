@@ -217,9 +217,50 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
+    op.create_table(
+        "users",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("email", sa.String(255), nullable=False, unique=True),
+        sa.Column("username", sa.String(100), nullable=False, unique=True),
+        sa.Column("hashed_password", sa.String(255), nullable=False),
+        sa.Column("full_name", sa.String(255), server_default=""),
+        sa.Column("roles", sa.JSON),
+        sa.Column("is_active", sa.Boolean, server_default="1"),
+        sa.Column("is_superuser", sa.Boolean, server_default="0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    op.create_index("ix_users_email", "users", ["email"])
+    op.create_index("ix_users_username", "users", ["username"])
+
+    op.create_table(
+        "refresh_tokens",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("token_hash", sa.String(255), nullable=False, unique=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked", sa.Boolean, server_default="0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    op.create_index("ix_refresh_tokens_user_id", "refresh_tokens", ["user_id"])
+    op.create_index("ix_refresh_tokens_token_hash", "refresh_tokens", ["token_hash"])
+
+    op.create_table(
+        "campaigns",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.Column("description", sa.Text),
+        sa.Column("status", sa.String(50), server_default="draft"),
+        sa.Column("target_criteria", sa.JSON),
+        sa.Column("schedule", sa.JSON),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+
 
 def downgrade() -> None:
-    for tbl in ["settings", "search_configs", "agent_runs", "reports",
-                "company_research_reports", "outreach_history", "proposals",
-                "opportunities", "contacts", "companies"]:
+    for tbl in ["refresh_tokens", "users", "campaigns", "settings", "search_configs",
+                "agent_runs", "reports", "company_research_reports",
+                "outreach_history", "proposals", "opportunities", "contacts", "companies"]:
         op.drop_table(tbl)
+

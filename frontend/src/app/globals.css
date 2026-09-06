@@ -20,6 +20,23 @@
   --purple: #c586c0;
 }
 
+html.light {
+  --bg: #f8fafc;
+  --sidebar: #ffffff;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-light: #dbeafe;
+  --green: #059669;
+  --yellow: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --purple: #9333ea;
+}
+
 html, body {
   margin: 0;
   min-height: 100%;

@@ -10,7 +10,7 @@ from backend.app.config import get_settings
 from backend.app.database import close_db, init_db
 from backend.app.metrics import PrometheusMiddleware, metrics_endpoint
 from backend.app.rate_limiter import RateLimitMiddleware
-from backend.app.routers import agents, auth, companies, contacts, dashboard, opportunities, outreach, proposals, reports
+from backend.app.routers import agents, auth, companies, contacts, dashboard, opportunities, outreach, proposals, rag, reports
 from backend.app.security import get_current_active_user
 
 # Configure logging
@@ -120,10 +120,11 @@ def create_app() -> FastAPI:
     app.include_router(opportunities.router, prefix="/v1/opportunities", tags=["Opportunities"], dependencies=auth_dependency)
     app.include_router(contacts.router, prefix="/v1/contacts", tags=["Contacts"], dependencies=auth_dependency)
     app.include_router(proposals.router, prefix="/v1/proposals", tags=["Proposals"], dependencies=auth_dependency)
-    app.include_router(outreach.router, prefix="/v1/outreach", tags=["Outreach"], dependencies=auth_dependency)
+    app.include_router(outreach.router, prefix="/v1/outreach", tags=["Outreach"])
     app.include_router(reports.router, prefix="/v1/reports", tags=["Reports"], dependencies=auth_dependency)
     app.include_router(agents.router, prefix="/v1/agents", tags=["Agents"], dependencies=auth_dependency)
     app.include_router(dashboard.router, prefix="/v1/dashboard", tags=["Dashboard"], dependencies=auth_dependency)
+    app.include_router(rag.router, prefix="/v1/rag", tags=["RAG"], dependencies=auth_dependency)
     
     return app
 

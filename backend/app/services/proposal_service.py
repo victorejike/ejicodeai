@@ -38,9 +38,9 @@ async def create_proposal(
     subject: str,
     body: str,
     word_count: int,
-    generation_model: str,
-    generation_prompt: str,
-    rag_context: dict,
+    generation_model: str = "manual",
+    generation_prompt: Optional[str] = None,
+    rag_context: Optional[dict] = None,
     initial_status: str = "draft",
 ) -> Proposal:
     proposal = Proposal(

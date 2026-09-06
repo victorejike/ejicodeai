@@ -1,4 +1,4 @@
-"""LangGraph supervisor graph with real agent routing."""
+"""LangGraph supervisor graph with isolated state routing and error handling."""
 import logging
 from typing import Literal
 from langgraph.graph import StateGraph, END
@@ -38,11 +38,13 @@ def route_supervisor(state: AgentState) -> Literal["job_scout", "company_scout",
 
 
 async def job_scout_node(state: AgentState) -> AgentState:
-    """Run Job Scout Agent."""
+    """Run Job Scout Agent and preserve discovered opportunities."""
     try:
         from agents.job_scout.job_scout_agent import JobScoutAgent
         agent = JobScoutAgent()
         result = await agent.process(state)
+        opps = result.get("output_data", {}).get("opportunities", [])
+        result["job_scout_opportunities"] = opps
         result["steps_completed"] = result.get("steps_completed", []) + ["job_scout"]
         return result
     except Exception as e:
@@ -52,11 +54,13 @@ async def job_scout_node(state: AgentState) -> AgentState:
 
 
 async def company_scout_node(state: AgentState) -> AgentState:
-    """Run Company Scout Agent."""
+    """Run Company Scout Agent and preserve discovered companies."""
     try:
         from agents.company_scout.company_scout_agent import CompanyScoutAgent
         agent = CompanyScoutAgent()
         result = await agent.process(state)
+        companies = result.get("output_data", {}).get("companies", [])
+        result["company_scout_companies"] = companies
         result["steps_completed"] = result.get("steps_completed", []) + ["company_scout"]
         return result
     except Exception as e:
@@ -66,13 +70,19 @@ async def company_scout_node(state: AgentState) -> AgentState:
 
 
 async def ranking_node(state: AgentState) -> AgentState:
-    """Run Ranking Agent."""
+    """Run Ranking Agent receiving preserved opportunities from job scout."""
     try:
         from agents.ranking.ranking_agent import RankingAgent
         agent = RankingAgent()
-        opportunities = state.get("output_data", {}).get("opportunities", [])
-        state["input_data"]["opportunities"] = opportunities
+        opportunities = state.get("job_scout_opportunities") or state.get("output_data", {}).get("opportunities", [])
+        companies = state.get("company_scout_companies") or state.get("output_data", {}).get("companies", [])
+        
+        state["input_data"] = {
+            "opportunities": opportunities,
+            "companies": {c.get("name", ""): c for c in companies},
+        }
         result = await agent.process(state)
+        result["ranking_opportunities"] = result.get("output_data", {}).get("opportunities", opportunities)
         result["steps_completed"] = result.get("steps_completed", []) + ["ranking"]
         return result
     except Exception as e:
@@ -82,14 +92,24 @@ async def ranking_node(state: AgentState) -> AgentState:
 
 
 async def research_node(state: AgentState) -> AgentState:
-    """Run Research Agent on top companies."""
+    """Run Research Agent on top ranked opportunities."""
     try:
         from agents.research.research_agent import ResearchAgent
-        companies = state.get("output_data", {}).get("companies", [])
-        if companies:
-            top = companies[0]
-            state["input_data"]["domain"] = top.get("domain", "")
-            state["input_data"]["company_id"] = top.get("id", "")
+        opps = state.get("ranking_opportunities") or state.get("job_scout_opportunities") or []
+        companies = state.get("company_scout_companies") or []
+
+        domain = ""
+        company_id = ""
+        if opps:
+            top_opp = opps[0]
+            domain = top_opp.get("domain") or top_opp.get("company_domain", "")
+            company_id = top_opp.get("company_id", "")
+        elif companies:
+            top_comp = companies[0]
+            domain = top_comp.get("domain", "")
+            company_id = top_comp.get("id", "")
+
+        state["input_data"] = {"domain": domain, "company_id": company_id}
         agent = ResearchAgent()
         result = await agent.process(state)
         result["steps_completed"] = result.get("steps_completed", []) + ["research"]
@@ -112,13 +132,17 @@ def build_supervisor_graph():
 
     graph.set_entry_point("supervisor")
 
-    graph.add_conditional_edges("supervisor", route_supervisor, {
-        "job_scout": "job_scout",
-        "company_scout": "company_scout",
-        "ranking": "ranking",
-        "research": "research",
-        END: END,
-    })
+    graph.add_conditional_edges(
+        "supervisor",
+        route_supervisor,
+        {
+            "job_scout": "job_scout",
+            "company_scout": "company_scout",
+            "ranking": "ranking",
+            "research": "research",
+            END: END,
+        },
+    )
 
     graph.add_edge("job_scout", "supervisor")
     graph.add_edge("company_scout", "supervisor")
@@ -126,6 +150,3 @@ def build_supervisor_graph():
     graph.add_edge("research", "supervisor")
 
     return graph.compile()
-
-
-supervisor_graph = build_supervisor_graph()

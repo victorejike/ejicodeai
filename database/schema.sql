@@ -230,6 +230,51 @@ CREATE TABLE search_configs (
 );
 
 -- ============================================================
+-- USERS & AUTH
+-- ============================================================
+CREATE TABLE users (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email           VARCHAR(255) UNIQUE NOT NULL,
+    username        VARCHAR(100) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    full_name       VARCHAR(255) DEFAULT '',
+    roles           JSONB DEFAULT '["user"]',
+    is_active       BOOLEAN DEFAULT TRUE,
+    is_superuser    BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+
+CREATE TABLE refresh_tokens (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    token_hash      VARCHAR(255) UNIQUE NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    revoked         BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+
+-- ============================================================
+-- CAMPAIGNS
+-- ============================================================
+CREATE TABLE campaigns (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name            VARCHAR(255) NOT NULL,
+    description     TEXT,
+    status          VARCHAR(50) DEFAULT 'draft',
+    target_criteria JSONB DEFAULT '{}',
+    schedule        JSONB DEFAULT '{}',
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
 -- SETTINGS
 -- ============================================================
 CREATE TABLE settings (
@@ -256,4 +301,6 @@ INSERT INTO settings (key, value, description) VALUES
     "min_send_interval_minutes": 5,
     "follow_up_interval_days": 5,
     "max_follow_ups": 3
-}', 'Outreach rate limits');
+}', 'Outreach rate limits')
+ON CONFLICT (key) DO NOTHING;
+

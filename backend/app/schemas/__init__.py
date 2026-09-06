@@ -1,6 +1,7 @@
 """Pydantic schemas for request/response validation."""
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
+from uuid import UUID
 from enum import Enum
 
 from pydantic import BaseModel, Field, EmailStr, HttpUrl
@@ -77,7 +78,7 @@ class SearchConfigUpdate(BaseModel):
 
 
 class SearchConfig(SearchConfigBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -120,7 +121,7 @@ class CompanyUpdate(BaseModel):
 
 
 class Company(CompanyBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -137,7 +138,7 @@ class OpportunityBase(BaseModel):
     raw_description: Optional[str] = None
     source_url: Optional[str] = None
     source_platform: Optional[str] = Field(None, max_length=100)
-    company_id: Optional[int] = None
+    company_id: Optional[Union[UUID, str, int]] = None
     type: Optional[str] = Field(None, max_length=50)
     score: Optional[float] = Field(None, ge=0, le=100)
     status: OpportunityStatus = OpportunityStatus.DISCOVERED
@@ -152,14 +153,14 @@ class OpportunityUpdate(BaseModel):
     raw_description: Optional[str] = None
     source_url: Optional[str] = None
     source_platform: Optional[str] = None
-    company_id: Optional[int] = None
+    company_id: Optional[Union[UUID, str, int]] = None
     type: Optional[str] = None
     score: Optional[float] = None
     status: Optional[OpportunityStatus] = None
 
 
 class Opportunity(OpportunityBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -177,7 +178,7 @@ class ContactBase(BaseModel):
     last_name: Optional[str] = Field(None, max_length=100)
     full_name: Optional[str] = Field(None, max_length=255)
     title: Optional[str] = Field(None, max_length=255)
-    company_id: Optional[int] = None
+    company_id: Optional[Union[UUID, str, int]] = None
     linkedin_url: Optional[str] = None
     source: Optional[str] = Field(None, max_length=100)
     status: ContactStatus = ContactStatus.ACTIVE
@@ -193,14 +194,14 @@ class ContactUpdate(BaseModel):
     last_name: Optional[str] = None
     full_name: Optional[str] = None
     title: Optional[str] = None
-    company_id: Optional[int] = None
+    company_id: Optional[Union[UUID, str, int]] = None
     linkedin_url: Optional[str] = None
     source: Optional[str] = None
     status: Optional[ContactStatus] = None
 
 
 class Contact(ContactBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -213,7 +214,7 @@ class Contact(ContactBase):
 # ============================================================================
 
 class CompanyResearchReportBase(BaseModel):
-    company_id: int
+    company_id: Union[UUID, str, int]
     summary: Optional[str] = None
     tech_stack: Optional[List[str]] = None
     team_size: Optional[str] = Field(None, max_length=50)
@@ -236,7 +237,7 @@ class CompanyResearchReportUpdate(BaseModel):
 
 
 class CompanyResearchReport(CompanyResearchReportBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -249,8 +250,8 @@ class CompanyResearchReport(CompanyResearchReportBase):
 # ============================================================================
 
 class ProposalBase(BaseModel):
-    opportunity_id: Optional[int] = None
-    contact_id: Optional[int] = None
+    opportunity_id: Optional[Union[UUID, str, int]] = None
+    contact_id: Optional[Union[UUID, str, int]] = None
     subject: str = Field(..., min_length=1, max_length=500)
     body: str = Field(..., min_length=1)
     type: Optional[str] = Field(None, max_length=50)
@@ -264,8 +265,8 @@ class ProposalCreate(ProposalBase):
 
 
 class ProposalUpdate(BaseModel):
-    opportunity_id: Optional[int] = None
-    contact_id: Optional[int] = None
+    opportunity_id: Optional[Union[UUID, str, int]] = None
+    contact_id: Optional[Union[UUID, str, int]] = None
     subject: Optional[str] = None
     body: Optional[str] = None
     type: Optional[str] = None
@@ -278,7 +279,7 @@ class ProposalApprove(BaseModel):
 
 
 class Proposal(ProposalBase):
-    id: int
+    id: Union[UUID, str, int]
     approved_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -292,9 +293,9 @@ class Proposal(ProposalBase):
 # ============================================================================
 
 class OutreachHistoryBase(BaseModel):
-    proposal_id: Optional[int] = None
-    contact_id: int
-    company_id: Optional[int] = None
+    proposal_id: Optional[Union[UUID, str, int]] = None
+    contact_id: Union[UUID, str, int]
+    company_id: Optional[Union[UUID, str, int]] = None
     email_to: EmailStr
     email_from: EmailStr
     subject: str = Field(..., min_length=1, max_length=255)
@@ -326,7 +327,7 @@ class OutreachHistoryUpdate(BaseModel):
 
 
 class OutreachHistory(OutreachHistoryBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 
@@ -367,7 +368,7 @@ class AgentRunUpdate(BaseModel):
 
 
 class AgentRun(AgentRunBase):
-    id: int
+    id: Union[UUID, str, int]
     created_at: datetime
     updated_at: datetime
 

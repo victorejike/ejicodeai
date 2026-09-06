@@ -1,0 +1,5 @@
+# Ejicode AI Business Development Platform
+User-agent: *
+Disallow: /api/
+Disallow: /v1/
+Allow: /

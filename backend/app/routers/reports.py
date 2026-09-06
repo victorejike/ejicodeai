@@ -37,6 +37,55 @@ async def list_reports(
     ]
 
 
+@router.get("/weekly")
+async def get_weekly_reports(db: AsyncSession = Depends(get_db)):
+    """Get all weekly reports."""
+    result = await db.execute(
+        select(Report).where(Report.type == "weekly").order_by(Report.generated_at.desc())
+    )
+    reports = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "type": r.type,
+            "title": r.title,
+            "summary": r.summary,
+            "period_start": r.period_start,
+            "period_end": r.period_end,
+            "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+        }
+        for r in reports
+    ]
+
+
+@router.get("/{report_id}")
+async def get_report_by_id(report_id: str, db: AsyncSession = Depends(get_db)):
+    """Get report by ID."""
+    from uuid import UUID
+    from fastapi import HTTPException, status
+    try:
+        uid = UUID(str(report_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid report ID")
+
+    report = await db.get(Report, uid)
+    if not report:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+
+    return {
+        "id": str(report.id),
+        "type": report.type,
+        "title": report.title,
+        "summary": report.summary,
+        "content": report.content,
+        "markdown": report.markdown,
+        "metrics": report.metrics,
+        "period_start": report.period_start,
+        "period_end": report.period_end,
+        "generated_at": report.generated_at.isoformat() if report.generated_at else None,
+    }
+
+
 @router.post("/generate")
 async def generate_report(report_type: str = "daily"):
     """Queue report generation via Celery."""

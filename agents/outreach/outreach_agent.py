@@ -2,7 +2,7 @@ import email.utils
 import logging
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 from agents.base.base_agent import BaseAgent, AgentState, AgentStatus
 from backend.app.config import get_settings
@@ -35,12 +35,25 @@ class OutreachAgent(BaseAgent):
         msg["To"] = contact.get("email")
         msg["Subject"] = proposal.get("subject", "Opportunity from Ejicode")
         msg["Message-ID"] = email.utils.make_msgid()
+
+        proposal_id = proposal.get("proposal_id", "")
+        contact_id = contact.get("id", "")
+        unsub_url = f"{settings.api_url}/v1/outreach/unsubscribe?contact_id={contact_id}"
+        msg["List-Unsubscribe"] = f"<{unsub_url}>"
+
         body = proposal.get("body", "")
+        plain_body = f"{body}\n\n---\nTo unsubscribe, click here: {unsub_url}"
 
-        pixel_url = f"{settings.api_url}/v1/outreach/track?proposal_id={proposal.get('proposal_id')}&contact_id={contact.get('id')}"
-        html_body = f"{body}<br><br><img src=\"{pixel_url}\" alt=\"\" width=1 height=1 style=\"display:none;\"/>"
+        pixel_url = f"{settings.api_url}/v1/outreach/track?proposal_id={proposal_id}&contact_id={contact_id}"
+        html_body = (
+            f"<div>{body.replace(chr(10), '<br>')}</div>"
+            f"<div style=\"margin-top: 30px; padding-top: 15px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #718096;\">"
+            f"If you prefer not to receive future emails from Ejicode, please <a href=\"{unsub_url}\">unsubscribe here</a>."
+            f"</div>"
+            f"<img src=\"{pixel_url}\" alt=\"\" width=\"1\" height=\"1\" style=\"display:none;\"/>"
+        )
 
-        msg.set_content(body)
+        msg.set_content(plain_body)
         msg.add_alternative(html_body, subtype="html")
         return msg
 
@@ -79,24 +92,26 @@ class OutreachAgent(BaseAgent):
         message = self._build_message(proposal, contact)
 
         state["current_step"] = "send_email"
+        now_iso = datetime.now(timezone.utc).isoformat()
         try:
             message_id = await self._send_email(message)
             state["status"] = AgentStatus.SUCCESS
             state["output_data"] = {
                 "message_id": message_id,
                 "delivery_status": "sent",
-                "sent_at": datetime.utcnow().isoformat(),
+                "sent_at": now_iso,
             }
             state["confidence_score"] = 0.9
         except Exception as e:
             logger.warning("SMTP delivery unavailable, queueing outreach instead: %s", e)
             state["status"] = AgentStatus.SUCCESS
             state["output_data"] = {
-                "message_id": f"queued-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                "message_id": f"queued-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "delivery_status": "queued",
-                "sent_at": datetime.utcnow().isoformat(),
+                "sent_at": now_iso,
                 "error_message": str(e),
             }
             state["confidence_score"] = 0.6
 
         return state
+

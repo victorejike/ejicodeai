@@ -263,15 +263,67 @@ class Settings(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class User(Base):
+    """User account model for authentication and RBAC."""
+
+    __tablename__ = "users"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), default="")
+    roles = Column(JSON, default=lambda: ["user"])
+    is_active = Column(Boolean, default=True)
+    is_superuser = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(Base):
+    """Stored refresh tokens for secure session rotation and revocation."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(255), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    user = relationship("User", back_populates="refresh_tokens")
+
+
+class Campaign(Base):
+    """Outreach campaign definition."""
+
+    __tablename__ = "campaigns"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    status = Column(String(50), default="draft")
+    target_criteria = Column(JSON, default=dict)
+    schedule = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 __all__ = [
     "AgentRun",
+    "Campaign",
     "Company",
     "CompanyResearchReport",
     "Contact",
     "Opportunity",
     "OutreachHistory",
     "Proposal",
+    "RefreshToken",
     "Report",
     "SearchConfig",
     "Settings",
+    "User",
 ]
