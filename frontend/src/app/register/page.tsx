@@ -97,11 +97,13 @@ function RegisterContent() {
         localStorage.setItem('account_type', accountType);
       }
 
-      // Direct to corresponding dashboard
+      // A brand-new account has no profile / requirements yet, so always go to
+      // the profile setup step first - that's the real knowledge base discovery
+      // will run from. Never skip straight to the dashboard on registration.
       if (accountType === 'individual') {
-        router.push('/individual/dashboard');
+        router.push('/individual/profile');
       } else {
-        router.push('/enterprise/dashboard');
+        router.push('/enterprise/profile');
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'An error occurred during registration.');

@@ -16,6 +16,7 @@ import {
   Github,
   KeyRound,
 } from 'lucide-react';
+import { resolvePostLoginDestination } from '@/lib/onboarding';
 
 function LoginContent() {
   const router = useRouter();
@@ -71,12 +72,10 @@ function LoginContent() {
         localStorage.setItem('user', JSON.stringify(data.user));
       }
 
-      // Route dynamically to appropriate workspace
-      if (userAccountType === 'enterprise') {
-        router.push('/enterprise/dashboard');
-      } else {
-        router.push('/individual/dashboard');
-      }
+      // Route to the profile/knowledge-base setup step first if onboarding isn't
+      // complete yet - discovery has nothing real to work from until then.
+      const destination = await resolvePostLoginDestination(userAccountType, data.access_token);
+      router.push(destination);
       router.refresh();
     } catch {
       setError('Network error — please check if the server is running.');

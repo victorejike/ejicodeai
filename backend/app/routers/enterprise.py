@@ -152,8 +152,19 @@ async def require_enterprise_user(
 @router.get("/organization")
 async def get_organization(
     org: Organization = Depends(require_enterprise_user),
+    db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
     """Retrieve organization profile and configuration."""
+    # Onboarding is only complete once the organization has defined at least one
+    # real talent/client requirement - that is the knowledge base discovery runs from.
+    requirements_count = (
+        await db.scalar(
+            select(func.count())
+            .select_from(TalentRequirement)
+            .where(TalentRequirement.organization_id == org.id)
+        )
+    ) or 0
+
     return {
         "status": "success",
         "organization": {
@@ -164,6 +175,8 @@ async def get_organization(
             "plan_tier": org.plan_tier,
             "settings": org.settings or {},
             "created_at": org.created_at.isoformat() if org.created_at else None,
+            "requirements_count": requirements_count,
+            "onboarding_complete": requirements_count > 0,
         },
     }
 
@@ -813,6 +826,17 @@ async def get_enterprise_dashboard_stats(
         round((offered_or_further / interviewed_or_further) * 100, 1) if interviewed_or_further > 0 else None
     )
 
+    # Onboarding is only complete once the organization has defined at least one
+    # real talent/client requirement - mirrors GET /organization's flag so any
+    # dashboard entry point can gate on it consistently.
+    requirements_count = (
+        await db.scalar(
+            select(func.count())
+            .select_from(TalentRequirement)
+            .where(TalentRequirement.organization_id == org.id)
+        )
+    ) or 0
+
     return {
         "status": "success",
         "data": {
@@ -824,5 +848,7 @@ async def get_enterprise_dashboard_stats(
             "average_match_score": average_match_score,
             "screening_to_interview_rate": screening_to_interview_rate,
             "interview_to_offer_rate": interview_to_offer_rate,
+            "requirements_count": requirements_count,
+            "onboarding_complete": requirements_count > 0,
         },
     }

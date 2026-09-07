@@ -24,7 +24,12 @@ async function getAuthToken(): Promise<string | null> {
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const token = await getAuthToken();
+
+    // Always use the real logged-in user's session token so the CV attaches to
+    // their own account. Only fall back to a dev auto-login when there is no
+    // real session at all (local testing without being signed in).
+    const authHeader = req.headers.get('authorization');
+    const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '') : await getAuthToken();
 
     const headers: Record<string, string> = {};
     if (token) {

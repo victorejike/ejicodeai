@@ -3,6 +3,7 @@
 import { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Sparkles } from 'lucide-react';
+import { resolvePostLoginDestination } from '@/lib/onboarding';
 
 function CallbackHandler() {
   const router = useRouter();
@@ -12,17 +13,25 @@ function CallbackHandler() {
     const token = searchParams.get('token');
     const refreshToken = searchParams.get('refresh_token');
     const accountType = searchParams.get('type') || 'individual';
-    const dest = searchParams.get('dest') || (accountType === 'enterprise' ? '/enterprise/dashboard' : '/individual/dashboard');
+    const explicitDest = searchParams.get('dest');
 
-    if (token) {
-      localStorage.setItem('token', token);
-      localStorage.setItem('account_type', accountType);
-      if (refreshToken) {
-        localStorage.setItem('refresh_token', refreshToken);
-      }
-      router.replace(dest);
-    } else {
+    if (!token) {
       router.replace('/login?error=OAuth%20authentication%20failed');
+      return;
+    }
+
+    localStorage.setItem('token', token);
+    localStorage.setItem('account_type', accountType);
+    if (refreshToken) {
+      localStorage.setItem('refresh_token', refreshToken);
+    }
+
+    // Respect an explicit destination if one was provided, otherwise route based
+    // on whether the profile / organization knowledge base is actually set up.
+    if (explicitDest) {
+      router.replace(explicitDest);
+    } else {
+      resolvePostLoginDestination(accountType, token).then((dest) => router.replace(dest));
     }
   }, [router, searchParams]);
 

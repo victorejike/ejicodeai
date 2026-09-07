@@ -158,12 +158,12 @@ async def get_individual_profile(
     profile = result.scalars().first()
 
     if not profile:
-        # Create default profile initialized with user details
+        # Create an empty profile shell for this user. Never pre-fill title,
+        # skills, or any other identity fact with a fabricated placeholder -
+        # those must come from the user's real CV or their own input.
         profile = UserProfile(
             user_id=user_id,
             full_name=current_user.full_name or current_user.username,
-            title="Software Engineer",
-            skills=["Python", "FastAPI", "PostgreSQL", "Docker", "React"],
             remote_preference="remote",
             job_types=["full-time", "contract"],
         )
@@ -172,6 +172,12 @@ async def get_individual_profile(
         await db.refresh(profile)
 
     completion_pct = calculate_profile_completion(profile)
+
+    # Onboarding is only complete once there is a real knowledge base to work
+    # from: either an uploaded/parsed CV, or a manually entered title + skills.
+    has_cv = profile.cv_document_id is not None
+    has_core_facts = bool(profile.title) and bool(profile.skills) and len(profile.skills) > 0
+    onboarding_complete = has_cv or has_core_facts
 
     return {
         "status": "success",
@@ -200,6 +206,8 @@ async def get_individual_profile(
             "career_goals": profile.career_goals,
             "ai_candidate_summary": profile.ai_candidate_summary or {},
             "completion_percentage": completion_pct,
+            "has_cv": has_cv,
+            "onboarding_complete": onboarding_complete,
         },
     }
 
@@ -496,15 +504,26 @@ async def search_and_match_opportunities(
         select(UserProfile).where(UserProfile.user_id == user_id)
     )
     profile = result.scalars().first()
+
+    # Never fabricate a candidate identity to search against. If the user hasn't
+    # uploaded a CV or entered real skills yet, there is nothing truthful to match.
+    if not profile or not profile.skills:
+        return {
+            "status": "profile_incomplete",
+            "message": "Upload your CV or add your skills on your profile before running opportunity discovery.",
+            "opportunities_evaluated": 0,
+            "top_matches": [],
+        }
+
     candidate_profile = {
-        "skills": profile.skills if profile else ["Python", "FastAPI", "React", "PostgreSQL"],
-        "experience_years": profile.experience_years if profile else 4.0,
-        "location": profile.location if profile else "Remote",
-        "remote_preference": profile.remote_preference if profile else "remote",
-        "salary_min": profile.salary_min if profile else 90000,
-        "salary_max": profile.salary_max if profile else 150000,
-        "technologies": profile.technologies if profile else ["Python", "FastAPI", "Docker"],
-        "career_goals": profile.career_goals if profile else "Senior Backend / Full-Stack AI Engineer",
+        "skills": profile.skills,
+        "experience_years": profile.experience_years or 0.0,
+        "location": profile.location or "Remote",
+        "remote_preference": profile.remote_preference or "remote",
+        "salary_min": profile.salary_min,
+        "salary_max": profile.salary_max,
+        "technologies": profile.technologies or [],
+        "career_goals": profile.career_goals,
     }
 
     matching_agent = MatchingAgent()
@@ -524,9 +543,9 @@ async def search_and_match_opportunities(
             "raw_description": opp.raw_description or "",
             "location": opp.location or "Remote",
             "location_type": opp.location_type or "remote",
-            "salary_min": opp.salary_min or 100000,
-            "salary_max": opp.salary_max or 160000,
-            "tech_required": opp.tech_required or ["Python", "FastAPI", "PostgreSQL"],
+            "salary_min": opp.salary_min,
+            "salary_max": opp.salary_max,
+            "tech_required": opp.tech_required or [],
         }
         match_result = await matching_agent.execute({
             "candidate_profile": candidate_profile,
@@ -721,21 +740,27 @@ async def record_rejection_and_recover(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid opportunity ID format")
 
-    opp_result = await db.execute(select(Opportunity).where(Opportunity.id == opp_uuid))
-    opp = opp_result.scalars().first()
-    if not opp:
+    opp_result = await db.execute(
+        select(Opportunity, Company.name.label("company_name"), Company.industry.label("company_industry"))
+        .outerjoin(Company, Opportunity.company_id == Company.id)
+        .where(Opportunity.id == opp_uuid)
+    )
+    row = opp_result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Opportunity not found")
+    opp, real_company_name, real_company_industry = row
 
     opp.status = "rejected"
 
-    # Run RejectionRecoveryAgent
+    # Run RejectionRecoveryAgent using the opportunity's real, linked company -
+    # never a fabricated placeholder name or industry.
     recovery_agent = RejectionRecoveryAgent()
     recovery_result = await recovery_agent.execute({
         "rejection_reason": payload.rejection_reason,
         "opportunity_title": opp.title,
-        "company_name": "Target Company",
-        "industry": "Software / AI",
-        "tech_stack": opp.tech_required or ["Python", "FastAPI"],
+        "company_name": real_company_name or "Unknown Company",
+        "industry": real_company_industry or "Unknown",
+        "tech_stack": opp.tech_required or [],
     })
 
     user_id = await _get_user_id(current_user, db)
@@ -927,17 +952,25 @@ async def generate_marketing_materials(
     p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     profile = p_res.scalars().first()
 
+    # Marketing materials must be built from the user's real, verified profile -
+    # never a fabricated generic developer identity.
+    if not profile or not profile.title or not profile.skills:
+        raise HTTPException(
+            status_code=400,
+            detail="Complete your profile (title and skills) or upload a CV before generating marketing materials.",
+        )
+
     candidate_profile = {
-        "full_name": (profile.full_name if profile and profile.full_name else None) or current_user.full_name or current_user.username,
-        "title": profile.title if profile else "Software Engineer",
-        "skills": profile.skills if profile else ["Python", "FastAPI", "React", "PostgreSQL"],
-        "experience_years": profile.experience_years if profile else 4.0,
-        "projects": profile.projects if profile else [],
-        "education": profile.education if profile else [],
-        "certifications": profile.certifications if profile else [],
-        "portfolio_url": profile.portfolio_url if profile else None,
-        "github_url": profile.github_url if profile else None,
-        "linkedin_url": profile.linkedin_url if profile else None,
+        "full_name": (profile.full_name if profile.full_name else None) or current_user.full_name or current_user.username,
+        "title": profile.title,
+        "skills": profile.skills,
+        "experience_years": profile.experience_years or 0.0,
+        "projects": profile.projects or [],
+        "education": profile.education or [],
+        "certifications": profile.certifications or [],
+        "portfolio_url": profile.portfolio_url,
+        "github_url": profile.github_url,
+        "linkedin_url": profile.linkedin_url,
     }
 
     opportunity_data = None
@@ -948,7 +981,7 @@ async def generate_marketing_materials(
             opp_res = await db.execute(select(Opportunity).where(Opportunity.id == opp_uuid))
             opp = opp_res.scalars().first()
             if opp:
-                opportunity_data = {"title": opp.title, "company_name": payload.company_name or "Target Company"}
+                opportunity_data = {"title": opp.title, "company_name": payload.company_name}
         except ValueError:
             pass
 
@@ -982,7 +1015,18 @@ async def get_companies_to_approach(
     user_id = await _get_user_id(current_user, db)
     p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     profile = p_res.scalars().first()
-    candidate_skills = profile.skills if profile and profile.skills else ["Python", "FastAPI", "React"]
+
+    # Never fabricate skills to scout companies against - require the user's real skills.
+    if not profile or not profile.skills:
+        return {
+            "status": "profile_incomplete",
+            "message": "Upload your CV or add your skills on your profile before discovering companies to approach.",
+            "pipeline": "Companies You Should Approach",
+            "count": 0,
+            "companies": [],
+        }
+
+    candidate_skills = profile.skills
 
     company_scout = CompanyScoutAgent()
     state = {
@@ -1017,13 +1061,13 @@ async def get_search_configuration(
         "config": {
             "search_frequency": profile.search_frequency if profile else "daily",
             "continuous_search_active": profile.continuous_search_active if profile else True,
-            "job_types": profile.job_types if profile else ["full-time", "contract"],
-            "locations": profile.preferred_locations if profile else ["Remote"],
-            "salary_min": profile.salary_min if profile else 100000,
-            "salary_max": profile.salary_max if profile else 160000,
+            "job_types": profile.job_types if profile and profile.job_types else ["full-time", "contract"],
+            "locations": profile.preferred_locations if profile and profile.preferred_locations else ["Remote"],
+            "salary_min": profile.salary_min if profile else None,
+            "salary_max": profile.salary_max if profile else None,
             "salary_currency": profile.salary_currency if profile else "USD",
-            "industries": profile.preferred_industries if profile else ["AI / SaaS", "Fintech"],
-            "skills": profile.skills if profile else ["Python", "FastAPI", "React"],
+            "industries": profile.preferred_industries if profile and profile.preferred_industries else [],
+            "skills": profile.skills if profile and profile.skills else [],
             "companies": profile.preferred_companies if profile else [],
             "remote_preference": profile.remote_preference if profile else "remote",
         },

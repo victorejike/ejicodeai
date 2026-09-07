@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   User,
   Briefcase,
@@ -37,6 +39,7 @@ import {
 import AgentEventFeed from '@/components/AgentEventFeed';
 
 export default function IndividualDashboard() {
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'matches' | 'companies' | 'marketing' | 'rejection' | 'search_config' | 'profile'>('matches');
   const [pipelineType, setPipelineType] = useState<'employment' | 'freelance'>('employment');
@@ -79,8 +82,8 @@ export default function IndividualDashboard() {
   const [editTitle, setEditTitle] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editSkills, setEditSkills] = useState('');
-  const [editSalaryMin, setEditSalaryMin] = useState<number>(120000);
-  const [editSalaryMax, setEditSalaryMax] = useState<number>(180000);
+  const [editSalaryMin, setEditSalaryMin] = useState<number | ''>('');
+  const [editSalaryMax, setEditSalaryMax] = useState<number | ''>('');
   const [editGoals, setEditGoals] = useState('');
 
   // Continuous Search Config
@@ -166,12 +169,21 @@ export default function IndividualDashboard() {
       if (profRes.ok) {
         const d = await profRes.json();
         if (d.profile) {
+          // Discovery must never run against an empty profile - if onboarding
+          // hasn't been completed yet, send the user back to set it up first.
+          if (!d.profile.onboarding_complete) {
+            router.replace('/individual/profile');
+            return;
+          }
           setProfile(d.profile);
-          setEditTitle(d.profile.title || 'Full Stack AI Engineer');
+          // Never prefill edit fields with fabricated placeholders - a user who
+          // saves without touching these fields must not overwrite real (or
+          // intentionally empty) data with an invented title/skills/salary.
+          setEditTitle(d.profile.title || '');
           setEditBio(d.profile.bio || '');
-          setEditSkills((d.profile.skills || ['Python', 'FastAPI', 'React', 'AI Agents']).join(', '));
-          setEditSalaryMin(d.profile.salary_min || 120000);
-          setEditSalaryMax(d.profile.salary_max || 180000);
+          setEditSkills((d.profile.skills || []).join(', '));
+          setEditSalaryMin(d.profile.salary_min ?? '');
+          setEditSalaryMax(d.profile.salary_max ?? '');
           setEditGoals(d.profile.career_goals || '');
           if (d.profile.marketing_materials) {
             setMarketingMaterials(d.profile.marketing_materials);
@@ -408,8 +420,8 @@ export default function IndividualDashboard() {
           title: editTitle,
           bio: editBio,
           skills: skillsArray,
-          salary_min: Number(editSalaryMin),
-          salary_max: Number(editSalaryMax),
+          salary_min: editSalaryMin === '' ? null : Number(editSalaryMin),
+          salary_max: editSalaryMax === '' ? null : Number(editSalaryMax),
           career_goals: editGoals,
         }),
       });
@@ -496,6 +508,14 @@ export default function IndividualDashboard() {
               Client Contracts
             </button>
           </div>
+
+          <Link
+            href="/individual/profile"
+            className="apple-button-secondary px-5 py-3 text-xs font-semibold flex items-center gap-2"
+          >
+            <User className="w-4 h-4" />
+            <span>My Profile</span>
+          </Link>
 
           <button
             onClick={handleTriggerSearch}
@@ -1235,7 +1255,7 @@ export default function IndividualDashboard() {
                         type="number"
                         disabled={!isEditingProfile}
                         value={editSalaryMin}
-                        onChange={(e) => setEditSalaryMin(Number(e.target.value))}
+                        onChange={(e) => setEditSalaryMin(e.target.value === '' ? '' : Number(e.target.value))}
                         className="w-full px-3.5 py-2 bg-[#08080a] border border-white/[0.08] rounded-xl text-white disabled:opacity-60"
                       />
                     </div>
@@ -1245,7 +1265,7 @@ export default function IndividualDashboard() {
                         type="number"
                         disabled={!isEditingProfile}
                         value={editSalaryMax}
-                        onChange={(e) => setEditSalaryMax(Number(e.target.value))}
+                        onChange={(e) => setEditSalaryMax(e.target.value === '' ? '' : Number(e.target.value))}
                         className="w-full px-3.5 py-2 bg-[#08080a] border border-white/[0.08] rounded-xl text-white disabled:opacity-60"
                       />
                     </div>

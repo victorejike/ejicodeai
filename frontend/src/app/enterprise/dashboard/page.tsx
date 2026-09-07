@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Building2,
   Users,
@@ -121,6 +123,7 @@ const STAGES = [
 ];
 
 export default function EnterpriseDashboard() {
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'pipeline' | 'scout' | 'team' | 'analytics'>('pipeline');
 
@@ -152,11 +155,13 @@ export default function EnterpriseDashboard() {
   const [selectedClient, setSelectedClient] = useState<ClientAccount | null>(null);
   const [isUpdatingStage, setIsUpdatingStage] = useState(false);
 
-  // AI Client Scout Form (Finding organizations that need to hire us)
-  const [scoutCompetencies, setScoutCompetencies] = useState('Distributed Systems, Python, FastAPI, Kubernetes, AI Agents, Next.js');
-  const [scoutIndustries, setScoutIndustries] = useState('Fintech, AI SaaS, Cloud Infrastructure, HealthTech');
-  const [scoutClientScale, setScoutClientScale] = useState('Series A-D & Mid-Market Enterprises');
-  const [scoutLocation, setScoutLocation] = useState('Remote / Global');
+  // AI Talent/Client Scout Form - starts empty. Real defaults are loaded from the
+  // organization's saved requirement (set up on the Organization Profile page),
+  // never a fabricated example.
+  const [scoutCompetencies, setScoutCompetencies] = useState('');
+  const [scoutIndustries, setScoutIndustries] = useState('');
+  const [scoutClientScale, setScoutClientScale] = useState('');
+  const [scoutLocation, setScoutLocation] = useState('Remote');
   const [isScouting, setIsScouting] = useState(false);
   const [scoutMessage, setScoutMessage] = useState<string | null>(null);
 
@@ -200,6 +205,12 @@ export default function EnterpriseDashboard() {
         // Always reflect the real response, including honest zero/null values -
         // never fall back to a fabricated placeholder when real data is empty.
         if (d.data) {
+          // Discovery must never run against an organization with no real
+          // requirements yet - send them back to set one up first.
+          if (!d.data.onboarding_complete) {
+            router.replace('/enterprise/profile');
+            return;
+          }
           setStats({
             organization_name: d.data.organization_name ?? '',
             plan_tier: d.data.plan_tier ?? '',
@@ -300,15 +311,22 @@ export default function EnterpriseDashboard() {
       });
 
       const data = await res.json();
-      if (res.ok && data.candidates) {
-        setScoutMessage(`Autonomous Fleet scouted and aligned ${data.candidates.length} verified enterprise client opportunities!`);
-        fetchDashboardData();
-        setActiveTab('pipeline');
+      if (res.ok) {
+        const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
+        setScoutMessage(
+          count > 0
+            ? `Scout completed: ${count} candidate${count === 1 ? '' : 's'} discovered and aligned to your requirement.`
+            : 'Scout completed: no matching candidates were found for this search. Try broadening your criteria.'
+        );
+        if (count > 0) {
+          fetchDashboardData();
+          setActiveTab('pipeline');
+        }
       } else {
-        setScoutMessage('Autonomous Fleet completed 8-channel sweep. 3 prospective clients aligned to your capability profile.');
+        setScoutMessage(data.error || data.detail || 'Scout run failed. Please try again.');
       }
     } catch {
-      setScoutMessage('Autonomous Fleet scout completed. 3 client companies with active needs aligned.');
+      setScoutMessage('Network error — could not reach the scouting service. Please try again.');
     } finally {
       setIsScouting(false);
     }
@@ -448,6 +466,14 @@ export default function EnterpriseDashboard() {
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
+            <Link
+              href="/enterprise/profile"
+              className="apple-button-secondary px-5 py-2.5 text-xs font-semibold flex items-center gap-2"
+            >
+              <Building2 className="w-4 h-4 text-zinc-300" />
+              <span>Organization Profile</span>
+            </Link>
+
             <button
               onClick={() => setShowAddModal(true)}
               className="apple-button-secondary px-5 py-2.5 text-xs font-semibold flex items-center gap-2"
