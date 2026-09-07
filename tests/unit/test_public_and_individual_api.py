@@ -36,13 +36,21 @@ def client(test_db_session):
 
 
 def test_public_statistics_endpoint(client):
-    """Test public statistics returns metric counts, 10 data sources, and 14 workflow stages."""
+    """Test public statistics returns real (never fabricated) metric counts,
+    10 data sources, and 14 workflow stages. On a fresh database, the counts
+    must be the true value of zero rather than a padded placeholder, and the
+    computed rates must be None until there is real data to compute them from.
+    """
     response = client.get("/v1/public/statistics")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
     assert "metrics" in data["data"]
-    assert data["data"]["metrics"]["total_opportunities_indexed"] >= 1480
+    assert data["data"]["metrics"]["total_opportunities_indexed"] == 0
+    assert data["data"]["metrics"]["total_companies_verified"] == 0
+    assert data["data"]["metrics"]["contacts_discovered"] == 0
+    assert data["data"]["metrics"]["rejection_recovery_rate"] is None
+    assert data["data"]["metrics"]["data_extraction_accuracy"] is None
     assert data["data"]["metrics"]["active_sources_count"] == 10
     assert data["data"]["metrics"]["workflow_stages_count"] == 14
     assert len(data["data"]["sources"]) == 10

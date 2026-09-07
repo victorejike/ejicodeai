@@ -1,11 +1,14 @@
 """SQLAlchemy ORM models for database tables."""
 from backend.app.models.core import (  # noqa: F401
+    AgentEvent,
     AgentRun,
     Campaign,
     Candidate,
     Company,
     CompanyResearchReport,
     Contact,
+    CVExtraction,
+    Document,
     FollowUpSchedule,
     Opportunity,
     Organization,
@@ -18,6 +21,7 @@ from backend.app.models.core import (  # noqa: F401
     Report,
     SearchConfig,
     Settings,
+    TalentRequirement,
     User,
     UserProfile,
     WorkflowExecution,
@@ -25,12 +29,15 @@ from backend.app.models.core import (  # noqa: F401
 )
 
 __all__ = [
+    "AgentEvent",
     "AgentRun",
     "Campaign",
     "Candidate",
     "Company",
     "CompanyResearchReport",
     "Contact",
+    "CVExtraction",
+    "Document",
     "FollowUpSchedule",
     "Opportunity",
     "Organization",
@@ -43,6 +50,7 @@ __all__ = [
     "Report",
     "SearchConfig",
     "Settings",
+    "TalentRequirement",
     "User",
     "UserProfile",
     "WorkflowExecution",

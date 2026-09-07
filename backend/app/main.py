@@ -17,6 +17,7 @@ from backend.app.routers import (
     contacts,
     dashboard,
     enterprise,
+    events,
     individual,
     opportunities,
     outreach,
@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
         return metrics_endpoint()
     
     # API v1 routes
+    app.include_router(events.router)
     app.include_router(public.router, prefix="/v1/public", tags=["Public"])
     app.include_router(auth.router, prefix="/v1/auth", tags=["Auth"])
     auth_dependency = [Depends(get_current_active_user)]

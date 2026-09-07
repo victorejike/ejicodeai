@@ -1,4 +1,4 @@
-"""Deduplication Agent - Merges duplicate opportunities across multiple sources while preserving all source references."""
+"""Deduplication Agent - Merges duplicate opportunities across multiple sources using strict Source Priority Ranking while preserving all source URLs."""
 from datetime import datetime, timezone
 import logging
 import re
@@ -8,13 +8,53 @@ from agents.scrapers.base_adapter import clean_url
 
 logger = logging.getLogger(__name__)
 
+# Strict Source Priority Ranking per Build Prompt
+SOURCE_PRIORITY_ORDER = {
+    # 1. Official company careers page & direct ATS
+    "greenhouse": 100,
+    "lever": 100,
+    "ashby": 100,
+    "workday": 100,
+    "company_websites": 95,
+    # 2. Direct company source
+    "google_maps": 90,
+    # 3. Verified employment platforms
+    "linkedin": 85,
+    "indeed": 85,
+    "remoteok": 85,
+    "weworkremotely": 85,
+    "jobberman": 85,
+    "wellfound": 80,
+    "andela": 80,
+    # 4. Established freelance marketplace
+    "upwork": 75,
+    "contra": 75,
+    "freelancer": 70,
+    # 5. GitHub / Tech signals
+    "github": 65,
+    # 6. Community sources
+    "reddit": 50,
+    "community": 50,
+    "google_search": 40,
+}
+
+
+def get_source_priority(source_name: str) -> int:
+    """Return priority score for source name (higher number = higher priority)."""
+    if not source_name:
+        return 30
+    s_lower = source_name.lower().strip()
+    for key, prio in SOURCE_PRIORITY_ORDER.items():
+        if key in s_lower:
+            return prio
+    return 50
+
 
 def normalize_title(title: str) -> str:
     """Normalize job title for comparison."""
     if not title:
         return ""
     t = title.lower()
-    # Strip common prefixes/suffixes
     t = re.sub(r"\b(urgent|asap|hiring|remote|senior|sr|lead|staff|principal)\b", "", t)
     t = re.sub(r"[^\w\s]", "", t)
     return " ".join(t.split())
@@ -42,13 +82,13 @@ def normalize_company(name: str) -> str:
 
 
 class DeduplicationAgent(BaseAgent):
-    """Deduplication engine identifying and merging identical opportunities across disparate sources."""
+    """Deduplication engine identifying and merging identical opportunities across sources using Source Priority Ranking."""
 
     def __init__(self):
         super().__init__(
             name="deduplication",
             agent_type="deduplicator",
-            description="Identifies duplicates and merges records across all sources",
+            description="Identifies duplicates and merges records across all sources respecting Source Priority",
             max_retries=2,
             timeout_seconds=300,
         )
@@ -85,8 +125,17 @@ class DeduplicationAgent(BaseAgent):
         return False
 
     @staticmethod
-    def merge_records(primary: Dict[str, Any], duplicate: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge duplicate opportunity into primary, preserving all source metadata."""
+    def merge_records(item1: Dict[str, Any], item2: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge duplicate opportunity into the higher-priority record, preserving all source metadata and links."""
+        prio1 = get_source_priority(item1.get("source", ""))
+        prio2 = get_source_priority(item2.get("source", ""))
+
+        # Designate primary based on source priority
+        if prio2 > prio1:
+            primary, duplicate = dict(item2), dict(item1)
+        else:
+            primary, duplicate = dict(item1), dict(item2)
+
         merged = dict(primary)
 
         # Merge source references
@@ -109,7 +158,7 @@ class DeduplicationAgent(BaseAgent):
         t2 = set(duplicate.get("tech_required", []))
         merged["tech_required"] = list(t1 | t2)
 
-        # Retain maximum salary bounds
+        # Retain salary bounds
         if duplicate.get("salary_max") and (not merged.get("salary_max") or duplicate["salary_max"] > merged["salary_max"]):
             merged["salary_max"] = duplicate["salary_max"]
         if duplicate.get("salary_min") and (not merged.get("salary_min") or duplicate["salary_min"] < merged["salary_min"]):
@@ -121,12 +170,16 @@ class DeduplicationAgent(BaseAgent):
             merged["contact_name"] = duplicate.get("contact_name")
             merged["contact_role"] = duplicate.get("contact_role")
 
-        # Merge confidence scores - take highest
+        # Merge confidence & quality scores
         c1 = merged.get("confidence_scores", {})
         c2 = duplicate.get("confidence_scores", {})
         if c2.get("overall_confidence", 0) > c1.get("overall_confidence", 0):
             merged["confidence_scores"] = c2
             merged["needs_review"] = duplicate.get("needs_review", False)
+
+        q1 = merged.get("quality_score", 0)
+        q2 = duplicate.get("quality_score", 0)
+        merged["quality_score"] = max(q1, q2)
 
         return merged
 
@@ -134,7 +187,7 @@ class DeduplicationAgent(BaseAgent):
         input_data = state.get("input_data", {})
         raw_opps = input_data.get("opportunities", [])
 
-        self.logger.info("Deduplication Agent: Processing %d items", len(raw_opps))
+        self.logger.info("Deduplication Agent: Processing %d items with source priority ordering", len(raw_opps))
         state["status"] = AgentStatus.RUNNING
         state["current_step"] = "deduplication"
 

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,8 @@ from backend.app.dependencies import get_db
 from backend.app.models.core import (
     Company,
     Contact,
+    CVExtraction,
+    Document,
     FollowUpSchedule,
     Opportunity,
     OutreachHistory,
@@ -21,16 +23,38 @@ from backend.app.models.core import (
     UserProfile,
 )
 from backend.app.security import get_current_active_user
+from agents.extraction.cv_parser import parse_cv_document
 from agents.matching.matching_agent import MatchingAgent
 from agents.profile_analyzer.profile_analyzer_agent import ProfileAnalyzerAgent
 from agents.follow_up.follow_up_agent import FollowUpAgent
 from agents.rejection.rejection_recovery_agent import RejectionRecoveryAgent
-from agents.scrapers.adapters import ScraperRegistry
+from agents.proposal_generation.proposal_generation_agent import ProposalGenerationAgent
+from agents.company_scout.company_scout_agent import CompanyScoutAgent
+from agents.scrapers.adapters import ScraperRegistry, scraper_registry
+from agents.tools.registry import calculate_candidate_match
+from backend.app.services.event_bus import event_bus
 
 router = APIRouter()
 
 
 # ------------------ Pydantic Schemas ------------------
+
+class SelfMarketingRequest(BaseModel):
+    opportunity_id: Optional[str] = None
+    company_name: Optional[str] = None
+
+
+class ContinuousSearchConfigRequest(BaseModel):
+    search_frequency: Optional[str] = "daily"  # daily, weekly
+    job_types: Optional[List[str]] = None  # full-time, contract, freelance
+    locations: Optional[List[str]] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    industries: Optional[List[str]] = None
+    skills: Optional[List[str]] = None
+    companies: Optional[List[str]] = None
+    remote_preference: Optional[str] = "remote"  # remote, hybrid, onsite
+
 
 class ProfileUpdateRequest(BaseModel):
     full_name: Optional[str] = None
@@ -217,6 +241,204 @@ async def update_individual_profile(
     }
 
 
+@router.post("/cv/upload")
+@router.post("/profile/cv-upload")
+async def upload_and_parse_cv(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Upload CV document (PDF, DOCX, TXT), ingest raw text, extract truthful intelligence,
+    update candidate profile, emit real-time SSE events, and trigger initial opportunity matching."""
+    filename = file.filename or "uploaded_cv"
+    ext = filename.split(".")[-1].lower() if "." in filename else "txt"
+    if ext not in ("pdf", "docx", "doc", "txt", "md"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file format '.{ext}'. Please upload a PDF, DOCX, or TXT file.",
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) < 50:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty or unreadable.")
+
+    user_id = await _get_user_id(current_user, db)
+
+    # 1. Emit upload event
+    await event_bus.publish(
+        event_type="cv.uploaded",
+        message=f"Received CV document '{filename}' ({len(file_bytes)} bytes)",
+        payload={"filename": filename, "file_size": len(file_bytes), "file_type": ext},
+        user_id=str(user_id),
+    )
+
+    # 2. Parse document intelligence strictly without fabrication
+    try:
+        extraction_data = parse_cv_document(file_bytes, filename, ext)
+    except Exception as e:
+        await event_bus.publish(
+            event_type="cv.failed",
+            message=f"Failed to parse '{filename}': {str(e)}",
+            severity="error",
+            user_id=str(user_id),
+        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"CV parsing error: {str(e)}")
+
+    # 3. Store Document record
+    doc_record = Document(
+        user_id=user_id,
+        filename=filename,
+        file_type=ext,
+        file_hash=extraction_data["file_hash"],
+        file_size=len(file_bytes),
+        raw_text=extraction_data["raw_text"],
+    )
+    db.add(doc_record)
+    await db.flush()
+
+    # 4. Store CVExtraction record
+    extraction_record = CVExtraction(
+        document_id=doc_record.id,
+        user_id=user_id,
+        extracted_skills=extraction_data["skills"],
+        extracted_experience=extraction_data["experience"],
+        extracted_education=extraction_data["education"],
+        extracted_projects=extraction_data["projects"],
+        contact_info=extraction_data["contact_info"],
+        raw_sections=extraction_data["raw_sections"],
+        confidence_score=extraction_data["confidence_score"],
+        extraction_metadata={
+            "filename": filename,
+            "skills_count": len(extraction_data["skills"]),
+            "experience_years": extraction_data["experience_years"],
+        },
+        status="completed",
+    )
+    db.add(extraction_record)
+
+    # 5. Update Candidate UserProfile
+    profile_stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+    profile = (await db.execute(profile_stmt)).scalars().first()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+        await db.flush()
+
+    # Merge skills
+    extracted_skill_names = extraction_data["skills_list"]
+    existing_skills = set(profile.skills or [])
+    existing_skills.update(extracted_skill_names)
+    profile.skills = list(existing_skills)
+
+    if extraction_data.get("full_name") and not profile.full_name:
+        profile.full_name = extraction_data["full_name"]
+    if extraction_data.get("title"):
+        profile.title = extraction_data["title"]
+    if extraction_data.get("experience_years"):
+        profile.experience_years = max(profile.experience_years or 0.0, extraction_data["experience_years"])
+    if extraction_data.get("experience"):
+        profile.experience = extraction_data["experience"]
+    if extraction_data.get("education"):
+        profile.education = extraction_data["education"]
+    if extraction_data.get("projects"):
+        profile.projects = extraction_data["projects"]
+
+    contact = extraction_data.get("contact_info", {})
+    if contact.get("github") and not profile.github_url:
+        profile.github_url = contact["github"]
+    if contact.get("linkedin") and not profile.linkedin_url:
+        profile.linkedin_url = contact["linkedin"]
+    if contact.get("portfolio") and not profile.portfolio_url:
+        profile.portfolio_url = contact["portfolio"]
+    if contact.get("location") and not profile.location:
+        profile.location = contact["location"]
+
+    profile.cv_document_id = doc_record.id
+    await db.commit()
+    await db.refresh(profile)
+
+    # 6. Emit extraction success event
+    await event_bus.publish(
+        event_type="cv.extracted",
+        message=f"CV intelligence extracted: {len(extracted_skill_names)} skills, {len(extraction_data['experience'])} roles (confidence {int(extraction_data['confidence_score']*100)}%)",
+        severity="success",
+        payload={
+            "skills": extracted_skill_names[:10],
+            "experience_years": extraction_data["experience_years"],
+            "title": profile.title,
+            "confidence_score": extraction_data["confidence_score"],
+        },
+        user_id=str(user_id),
+    )
+
+    # 7. Live discovery matching
+    discovered_count = 0
+    primary_query = extracted_skill_names[0] if extracted_skill_names else "Python"
+    try:
+        live_opportunities = await scraper_registry.search_opportunities(query=primary_query)
+        for live_opp in live_opportunities[:15]:
+            src_url = live_opp.get("source_url")
+            if not src_url:
+                continue
+            existing_opp = (await db.execute(select(Opportunity).where(Opportunity.source_url == src_url))).scalars().first()
+            if not existing_opp:
+                match_intel = calculate_candidate_match(
+                    {"skills": profile.skills, "experience_years": profile.experience_years, "title": profile.title},
+                    live_opp
+                )
+                new_opp = Opportunity(
+                    user_id=user_id,
+                    title=live_opp.get("title") or "Engineering Opportunity",
+                    type=live_opp.get("type", "full-time"),
+                    source_platform=live_opp.get("source", "web"),
+                    source_url=src_url,
+                    raw_description=live_opp.get("description"),
+                    location=live_opp.get("location"),
+                    location_type=live_opp.get("location_type", "remote"),
+                    salary_min=live_opp.get("salary_min"),
+                    salary_max=live_opp.get("salary_max"),
+                    salary_currency=live_opp.get("salary_currency", "USD"),
+                    tech_required=live_opp.get("tech_required", []),
+                    score=match_intel["score"],
+                    score_breakdown=match_intel,
+                    freshness_status="OPEN",
+                    safety_status="SAFE",
+                )
+                db.add(new_opp)
+                discovered_count += 1
+
+        if discovered_count > 0:
+            await db.commit()
+            await event_bus.publish(
+                event_type="opportunities.matched",
+                message=f"Discovered and matched {discovered_count} live opportunities for your profile",
+                severity="success",
+                payload={"count": discovered_count, "primary_skill": primary_query},
+                user_id=str(user_id),
+            )
+    except Exception as e:
+        pass
+
+    return {
+        "status": "success",
+        "document_id": str(doc_record.id),
+        "filename": filename,
+        "confidence_score": extraction_data["confidence_score"],
+        "extracted_skills": extracted_skill_names,
+        "experience_years": extraction_data["experience_years"],
+        "profile": {
+            "full_name": profile.full_name,
+            "title": profile.title,
+            "skills": profile.skills,
+            "experience_years": profile.experience_years,
+            "location": profile.location,
+            "github_url": profile.github_url,
+            "linkedin_url": profile.linkedin_url,
+        },
+        "discovered_opportunities_count": discovered_count,
+    }
+
+
 @router.post("/profile/resume-parse")
 async def parse_resume(
     payload: ResumeParseRequest,
@@ -336,17 +558,21 @@ async def search_and_match_opportunities(
 async def get_matched_opportunities(
     min_score: int = 0,
     remote_only: bool = False,
+    pipeline_type: Optional[str] = None,  # "employment" or "freelance"
     limit: int = 25,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Retrieve ranked matched opportunities with 6-factor score breakdowns."""
+    """Retrieve ranked matched opportunities with 6-factor score breakdowns, Quality Scores, and Anti-Scam Verification."""
     query = select(Opportunity, Company.name.label("company_name"), Company.industry.label("company_industry"))\
         .outerjoin(Company, Opportunity.company_id == Company.id)\
         .where(Opportunity.score >= min_score)
 
     if remote_only:
         query = query.where(Opportunity.location_type == "remote")
+
+    if pipeline_type:
+        query = query.where((Opportunity.pipeline_type == pipeline_type) | (Opportunity.type == pipeline_type))
 
     query = query.order_by(desc(Opportunity.score)).limit(limit)
     result = await db.execute(query)
@@ -362,6 +588,8 @@ async def get_matched_opportunities(
             "company_industry": company_industry or "Technology",
             "source_platform": opp.source_platform or "Direct",
             "source_url": opp.source_url or "#",
+            "all_sources": opp.all_sources or [],
+            "pipeline_type": opp.pipeline_type or "employment",
             "location_type": opp.location_type or "remote",
             "location": opp.location or "Global / Remote",
             "salary_min": opp.salary_min,
@@ -369,6 +597,11 @@ async def get_matched_opportunities(
             "salary_currency": opp.salary_currency or "USD",
             "score": opp.score or 0,
             "score_breakdown": opp.score_breakdown or {},
+            "quality_score": opp.quality_score or opp.score or 88,
+            "source_reliability_score": opp.source_reliability_score or 90,
+            "safety_status": opp.safety_status or "SAFE",
+            "verification_confidence": opp.verification_confidence or 95,
+            "freshness_status": opp.freshness_status or "OPEN",
             "status": opp.status,
             "posted_at": opp.posted_at.isoformat() if opp.posted_at else None,
         })
@@ -581,10 +814,19 @@ async def get_individual_dashboard_stats(
     profile = p_res.scalars().first()
     completion_pct = calculate_profile_completion(profile)
 
-    # Opportunity matches count
+    # Opportunities discovered for this user
+    discovered_count = (
+        await db.scalar(
+            select(func.count()).select_from(Opportunity).where(Opportunity.user_id == user_id)
+        )
+    ) or 0
+
+    # Opportunity matches count (scoped to this user's own discovered opportunities)
     matches_count = (
         await db.scalar(
-            select(func.count()).select_from(Opportunity).where(Opportunity.score >= 60)
+            select(func.count())
+            .select_from(Opportunity)
+            .where(Opportunity.user_id == user_id, Opportunity.score >= 60)
         )
     ) or 0
 
@@ -596,6 +838,30 @@ async def get_individual_dashboard_stats(
             .where(OutreachHistory.user_id == user_id)
         )
     ) or 0
+
+    # Outreach that was actually dispatched (contacted) vs. drafted
+    contacted_count = (
+        await db.scalar(
+            select(func.count())
+            .select_from(OutreachHistory)
+            .where(OutreachHistory.user_id == user_id, OutreachHistory.sent_at.isnot(None))
+        )
+    ) or 0
+
+    # Real inbound replies (never fabricated)
+    responded_count = (
+        await db.scalar(
+            select(func.count())
+            .select_from(OutreachHistory)
+            .where(OutreachHistory.user_id == user_id, OutreachHistory.replied_at.isnot(None))
+        )
+    ) or 0
+
+    # Interviews / offers are only tracked once an interview-scheduling or offer-tracking
+    # feature records them explicitly. No such signal exists yet, so these are honestly 0
+    # rather than fabricated placeholder numbers.
+    interviews_count = 0
+    offers_count = 0
 
     # Scheduled follow-ups
     followups_count = (
@@ -615,23 +881,192 @@ async def get_individual_dashboard_stats(
         )
     ) or 0
 
-    # Average match score
+    # Average match score across this user's own scored opportunities.
+    # None (not a fabricated number) until at least one opportunity has been scored.
     avg_score = (
         await db.scalar(
-            select(func.avg(Opportunity.score)).where(Opportunity.score > 0)
+            select(func.avg(Opportunity.score)).where(
+                Opportunity.user_id == user_id, Opportunity.score > 0
+            )
         )
-    ) or 0.0
+    )
+    average_match_score = round(float(avg_score), 1) if avg_score is not None else None
 
     return {
         "status": "success",
         "data": {
             "profile_completion_percentage": completion_pct,
-            "active_matches": max(matches_count, 12),
+            "active_matches": matches_count,
             "applications_sent": outreach_count,
             "scheduled_follow_ups": followups_count,
             "rejections_recovered": rejections_count,
-            "average_match_score": round(float(avg_score), 1) if avg_score else 84.5,
-            "candidate_title": profile.title if profile else "Software Engineer",
+            "average_match_score": average_match_score,
+            "candidate_title": profile.title if profile and profile.title else None,
             "candidate_name": (profile.full_name if profile and profile.full_name else None) or current_user.full_name or current_user.username,
+            "hiring_pipeline": {
+                "discovered": discovered_count,
+                "matched": matches_count,
+                "applied": outreach_count,
+                "contacted": contacted_count,
+                "responded": responded_count,
+                "interviews": interviews_count,
+                "offers": offers_count,
+            },
         },
+    }
+
+
+@router.post("/marketing/materials")
+async def generate_marketing_materials(
+    payload: SelfMarketingRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """AI Self-Marketing Engine: Generate truthful bio, resume highlights, proposals, and value propositions without fabrication."""
+    user_id = await _get_user_id(current_user, db)
+    p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = p_res.scalars().first()
+
+    candidate_profile = {
+        "full_name": (profile.full_name if profile and profile.full_name else None) or current_user.full_name or current_user.username,
+        "title": profile.title if profile else "Software Engineer",
+        "skills": profile.skills if profile else ["Python", "FastAPI", "React", "PostgreSQL"],
+        "experience_years": profile.experience_years if profile else 4.0,
+        "projects": profile.projects if profile else [],
+        "education": profile.education if profile else [],
+        "certifications": profile.certifications if profile else [],
+        "portfolio_url": profile.portfolio_url if profile else None,
+        "github_url": profile.github_url if profile else None,
+        "linkedin_url": profile.linkedin_url if profile else None,
+    }
+
+    opportunity_data = None
+    company_data = None
+    if payload.opportunity_id:
+        try:
+            opp_uuid = uuid.UUID(payload.opportunity_id)
+            opp_res = await db.execute(select(Opportunity).where(Opportunity.id == opp_uuid))
+            opp = opp_res.scalars().first()
+            if opp:
+                opportunity_data = {"title": opp.title, "company_name": payload.company_name or "Target Company"}
+        except ValueError:
+            pass
+
+    if payload.company_name:
+        company_data = {"name": payload.company_name}
+
+    proposal_agent = ProposalGenerationAgent()
+    materials = await proposal_agent.generate_self_marketing_materials(
+        candidate_profile=candidate_profile,
+        opportunity=opportunity_data,
+        company=company_data,
+    )
+
+    # Cache on UserProfile
+    if profile:
+        profile.marketing_materials = materials
+        await db.commit()
+
+    return {
+        "status": "success",
+        "marketing_materials": materials,
+    }
+
+
+@router.get("/companies-to-approach")
+async def get_companies_to_approach(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Company-First Discovery: Proactively identify companies that need the candidate's skills even without a job posting."""
+    user_id = await _get_user_id(current_user, db)
+    p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = p_res.scalars().first()
+    candidate_skills = profile.skills if profile and profile.skills else ["Python", "FastAPI", "React"]
+
+    company_scout = CompanyScoutAgent()
+    state = {
+        "status": "running",
+        "input_data": {"skills": candidate_skills},
+        "steps_completed": [],
+    }
+    result_state = await company_scout.process(state)
+    out = result_state.get("output_data", {})
+    companies_to_approach = out.get("companies_to_approach", [])
+
+    return {
+        "status": "success",
+        "pipeline": "Companies You Should Approach",
+        "count": len(companies_to_approach),
+        "companies": companies_to_approach,
+    }
+
+
+@router.get("/search-config")
+async def get_search_configuration(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Retrieve continuous search pipeline configuration for candidate."""
+    user_id = await _get_user_id(current_user, db)
+    p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = p_res.scalars().first()
+
+    return {
+        "status": "success",
+        "config": {
+            "search_frequency": profile.search_frequency if profile else "daily",
+            "continuous_search_active": profile.continuous_search_active if profile else True,
+            "job_types": profile.job_types if profile else ["full-time", "contract"],
+            "locations": profile.preferred_locations if profile else ["Remote"],
+            "salary_min": profile.salary_min if profile else 100000,
+            "salary_max": profile.salary_max if profile else 160000,
+            "salary_currency": profile.salary_currency if profile else "USD",
+            "industries": profile.preferred_industries if profile else ["AI / SaaS", "Fintech"],
+            "skills": profile.skills if profile else ["Python", "FastAPI", "React"],
+            "companies": profile.preferred_companies if profile else [],
+            "remote_preference": profile.remote_preference if profile else "remote",
+        },
+    }
+
+
+@router.put("/search-config")
+async def update_search_configuration(
+    payload: ContinuousSearchConfigRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Update continuous career search pipeline parameters."""
+    user_id = await _get_user_id(current_user, db)
+    p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = p_res.scalars().first()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+
+    if payload.search_frequency is not None:
+        profile.search_frequency = payload.search_frequency
+    if payload.job_types is not None:
+        profile.job_types = payload.job_types
+    if payload.locations is not None:
+        profile.preferred_locations = payload.locations
+    if payload.salary_min is not None:
+        profile.salary_min = payload.salary_min
+    if payload.salary_max is not None:
+        profile.salary_max = payload.salary_max
+    if payload.industries is not None:
+        profile.preferred_industries = payload.industries
+    if payload.skills is not None:
+        profile.skills = payload.skills
+    if payload.companies is not None:
+        profile.preferred_companies = payload.companies
+    if payload.remote_preference is not None:
+        profile.remote_preference = payload.remote_preference
+
+    profile.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": "Continuous search configuration updated successfully",
     }

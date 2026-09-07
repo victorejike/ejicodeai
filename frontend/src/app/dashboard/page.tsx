@@ -200,19 +200,23 @@ export default function Dashboard() {
           </div>
 
           <div className="space-y-3.5 flex-1 overflow-y-auto">
-            {(analyticsData?.activity_timeline || [
-              { id: '1', title: 'Daily Discovery Completed', timestamp: 'Just now', detail: 'Identified 18 opportunities on RemoteOK' },
-              { id: '2', title: 'Research Report Generated', timestamp: '22m ago', detail: 'Acme Health fit score: 94' },
-              { id: '3', title: 'Proposal Ready for Approval', timestamp: '1h ago', detail: 'Elena Rostova (VP Eng)' },
-            ]).map((evt: any, i: number) => (
-              <div key={i} className="flex items-start gap-3 text-xs border-l-2 border-vscode-accent/60 pl-3 py-0.5">
-                <div className="flex-1">
-                  <div className="font-semibold text-vscode-text">{evt.title}</div>
-                  <div className="text-vscode-muted text-[11px] mt-0.5">{evt.detail}</div>
-                  <div className="text-vscode-muted/70 text-[10px] mt-1 font-mono">{evt.timestamp}</div>
-                </div>
+            {!analyticsData?.activity_timeline || analyticsData.activity_timeline.length === 0 ? (
+              <div className="text-xs text-vscode-muted py-6 text-center">
+                No activity yet. Real agent runs, proposals, and replies will appear here as they happen.
               </div>
-            ))}
+            ) : (
+              analyticsData.activity_timeline.map((evt: any, i: number) => (
+                <div key={evt.id || i} className="flex items-start gap-3 text-xs border-l-2 border-vscode-accent/60 pl-3 py-0.5">
+                  <div className="flex-1">
+                    <div className="font-semibold text-vscode-text">{evt.title}</div>
+                    <div className="text-vscode-muted text-[11px] mt-0.5">{evt.detail}</div>
+                    <div className="text-vscode-muted/70 text-[10px] mt-1 font-mono">
+                      {evt.timestamp ? new Date(evt.timestamp).toLocaleString() : ''}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 

@@ -9,6 +9,7 @@ from backend.app.models.core import (
     Candidate,
     Company,
     Contact,
+    CVExtraction,
     Opportunity,
     OutreachHistory,
     Proposal,
@@ -32,11 +33,23 @@ async def get_public_statistics(db: AsyncSession = Depends(get_db)) -> Dict[str,
     rejections_count = (await db.scalar(select(func.count()).select_from(RejectionLog))) or 0
     workflows_count = (await db.scalar(select(func.count()).select_from(WorkflowExecution))) or 0
 
-    # Ensure robust baseline representation when database has low initial test/seed counts
-    display_opportunities = max(opportunities_count, 1480)
-    display_companies = max(companies_count, 620)
-    display_contacts = max(contacts_count, 3100)
-    display_outreach = max(outreach_count, 890)
+    # Recovery rate is computed from real rejection-log outcomes only.
+    # Returns None (no fabricated number) until at least one rejection has been logged.
+    recovered_rejections = (
+        await db.scalar(
+            select(func.count())
+            .select_from(RejectionLog)
+            .where(RejectionLog.similar_search_triggered.is_(True))
+        )
+    ) or 0
+    rejection_recovery_rate = (
+        round((recovered_rejections / rejections_count) * 100, 1) if rejections_count > 0 else None
+    )
+
+    # Extraction accuracy is the real average confidence score across processed CVs.
+    # Returns None (no fabricated number) until at least one CV has been processed.
+    avg_confidence = await db.scalar(select(func.avg(CVExtraction.confidence_score)))
+    data_extraction_accuracy = round(float(avg_confidence) * 100, 1) if avg_confidence is not None else None
 
     # 14-stage workflow architecture definition
     workflow_stages = [
@@ -73,13 +86,13 @@ async def get_public_statistics(db: AsyncSession = Depends(get_db)) -> Dict[str,
         "status": "success",
         "data": {
             "metrics": {
-                "total_opportunities_indexed": display_opportunities,
-                "total_companies_verified": display_companies,
-                "contacts_discovered": display_contacts,
-                "outreach_delivered": display_outreach,
-                "candidates_matched": max(candidates_count, 420),
-                "rejection_recovery_rate": 78.5,
-                "data_extraction_accuracy": 99.1,
+                "total_opportunities_indexed": opportunities_count,
+                "total_companies_verified": companies_count,
+                "contacts_discovered": contacts_count,
+                "outreach_delivered": outreach_count,
+                "candidates_matched": candidates_count,
+                "rejection_recovery_rate": rejection_recovery_rate,
+                "data_extraction_accuracy": data_extraction_accuracy,
                 "active_sources_count": len(active_sources),
                 "workflow_stages_count": len(workflow_stages),
             },

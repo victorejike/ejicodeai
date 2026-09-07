@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     hunter_io_api_key: Optional[str] = None
     apify_api_token: Optional[str] = None
     apify_google_maps_actor_id: str = "compass/crawler-google-places"
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[str] = None
 
     # Monitoring
     grafana_password: str = "admin"

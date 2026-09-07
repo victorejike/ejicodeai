@@ -5,6 +5,8 @@ import re
 import secrets
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
+import httpx
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -660,3 +662,155 @@ async def logout(
             await db.rollback()
 
     return {"status": "logged_out"}
+
+
+@router.get("/github/authorize")
+async def github_authorize(account_type: str = "individual"):
+    """Redirect to GitHub OAuth authorization URL or return configuration guidance."""
+    if not settings.github_client_id:
+        return JSONResponse(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            content={
+                "status": "not_configured",
+                "message": (
+                    "GitHub OAuth is not configured. To enable GitHub single sign-on, set "
+                    "GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in your environment or .env file."
+                ),
+                "setup_instructions": {
+                    "callback_url": f"{settings.api_url}/v1/auth/github/callback",
+                    "documentation": "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app",
+                },
+            },
+        )
+
+    redirect_uri = f"{settings.api_url}/v1/auth/github/callback"
+    url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={settings.github_client_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope=user:email"
+        f"&state={account_type}"
+    )
+    return RedirectResponse(url=url)
+
+
+@router.get("/github/callback")
+async def github_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = "individual",
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle GitHub OAuth callback, create/login user, and issue platform JWT tokens."""
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing OAuth code from GitHub authorization response.",
+        )
+    if not settings.github_client_id or not settings.github_client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="GitHub OAuth credentials (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET) are not configured.",
+        )
+
+    # 1. Exchange code for GitHub access token
+    token_url = "https://github.com/login/oauth/access_token"
+    async with httpx.AsyncClient() as client:
+        token_res = await client.post(
+            token_url,
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": settings.github_client_id,
+                "client_secret": settings.github_client_secret,
+                "code": code,
+            },
+        )
+        token_json = token_res.json()
+        gh_access_token = token_json.get("access_token")
+        if not gh_access_token:
+            error_desc = token_json.get("error_description") or "Failed to obtain access token from GitHub."
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_desc)
+
+        # 2. Retrieve GitHub user profile
+        user_res = await client.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"Bearer {gh_access_token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "EjicodeAI-Auth",
+            },
+        )
+        gh_user = user_res.json()
+        gh_login = gh_user.get("login")
+        gh_email = gh_user.get("email")
+
+        # 3. If email is private, fetch primary verified email
+        if not gh_email:
+            emails_res = await client.get(
+                "https://api.github.com/user/emails",
+                headers={
+                    "Authorization": f"Bearer {gh_access_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "EjicodeAI-Auth",
+                },
+            )
+            if emails_res.status_code == 200:
+                for em in emails_res.json():
+                    if em.get("primary") and em.get("verified"):
+                        gh_email = em.get("email")
+                        break
+
+        if not gh_email:
+            gh_email = f"{gh_login}@users.noreply.github.com"
+
+    account_type = state if state in ["individual", "enterprise"] else "individual"
+
+    # 4. Find or create user in DB
+    user_stmt = select(DBUser).where((DBUser.email == gh_email) | (DBUser.username == gh_login))
+    res = await db.execute(user_stmt)
+    user = res.scalars().first()
+
+    if not user:
+        user = DBUser(
+            email=gh_email,
+            username=gh_login,
+            hashed_password=hash_password(secrets.token_urlsafe(24)),
+            full_name=gh_user.get("name") or gh_login,
+            account_type=account_type,
+            roles=["user"] if account_type == "individual" else ["admin", "recruiter"],
+            is_active=True,
+        )
+        db.add(user)
+        await db.flush()
+
+        if account_type == "individual":
+            profile = UserProfile(
+                user_id=user.id,
+                title=gh_user.get("bio") or "Software Engineer",
+                skills=["Git", "GitHub"],
+                location=gh_user.get("location") or "Remote",
+                visibility="public",
+            )
+            db.add(profile)
+        await db.commit()
+
+    # 5. Issue JWT tokens
+    access_token = create_access_token(
+        username=user.username,
+        roles=user.roles,
+        email=user.email,
+        user_id=str(user.id),
+        account_type=user.account_type,
+        organization_id=str(user.organization_id) if user.organization_id else None,
+        expires_delta=timedelta(hours=settings.access_token_expire_hours),
+    )
+    refresh_token = create_refresh_token(
+        username=user.username,
+        roles=user.roles,
+        expires_delta=timedelta(days=settings.refresh_token_expire_days),
+    )
+
+    frontend_base = "http://localhost:3000"
+    target_dashboard = "/enterprise/dashboard" if user.account_type == "enterprise" else "/individual/dashboard"
+    redirect_target = f"{frontend_base}/auth/callback?token={access_token}&refresh_token={refresh_token}&type={user.account_type}&dest={target_dashboard}"
+    return RedirectResponse(url=redirect_target)
+

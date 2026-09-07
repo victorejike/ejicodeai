@@ -148,16 +148,8 @@ async def get_dashboard_analytics(db: AsyncSession = Depends(get_db)):
             "avg_seconds": avg_sec,
         })
 
-    # Default fallback series if agent runs are sparse in dev
-    if not agent_performance:
-        agent_performance = [
-            {"agent": "Job Scout", "runs": 14, "success_rate": 96.0, "avg_seconds": 4.2},
-            {"agent": "Company Scout", "runs": 12, "success_rate": 92.0, "avg_seconds": 6.8},
-            {"agent": "Ranking Agent", "runs": 18, "success_rate": 100.0, "avg_seconds": 1.5},
-            {"agent": "Research Agent", "runs": 8, "success_rate": 88.0, "avg_seconds": 12.4},
-            {"agent": "Contact Scout", "runs": 10, "success_rate": 90.0, "avg_seconds": 5.1},
-            {"agent": "Proposal Gen", "runs": 6, "success_rate": 100.0, "avg_seconds": 8.7},
-        ]
+    # No fabricated fallback series: if no agents have run yet, the chart
+    # honestly renders empty until real agent runs are recorded.
 
     # 4. Outreach Success Graph
     outreach_records = (await db.execute(select(OutreachHistory))).scalars().all()
@@ -172,26 +164,36 @@ async def get_dashboard_analytics(db: AsyncSession = Depends(get_db)):
         if r.replied_at:
             outreach_stats["replied"] += 1
 
-    # Populate baseline if fresh install
-    sent_cnt = max(outreach_stats["sent"], 15)
-    opened_cnt = max(outreach_stats["opened"], 9)
-    replied_cnt = max(outreach_stats["replied"], 4)
-    bounced_cnt = max(outreach_stats["bounced"], 1)
-
     outreach_success = [
-        {"metric": "Sent", "value": sent_cnt, "fill": "#3b82f6"},
-        {"metric": "Opened", "value": opened_cnt, "fill": "#8b5cf6"},
-        {"metric": "Replied", "value": replied_cnt, "fill": "#10b981"},
-        {"metric": "Bounced", "value": bounced_cnt, "fill": "#ef4444"},
+        {"metric": "Sent", "value": outreach_stats["sent"], "fill": "#3b82f6"},
+        {"metric": "Opened", "value": outreach_stats["opened"], "fill": "#8b5cf6"},
+        {"metric": "Replied", "value": outreach_stats["replied"], "fill": "#10b981"},
+        {"metric": "Bounced", "value": outreach_stats["bounced"], "fill": "#ef4444"},
     ]
 
-    # 5. Revenue Pipeline Graph (Estimated deal value by opportunity stage)
+    # 5. Revenue Pipeline Graph: real compensation figures attached to opportunities,
+    # aggregated by their company's real pipeline stage. No invented dollar amounts -
+    # stages with no priced opportunities yet honestly show $0.
+    opp_value_rows = (
+        await db.execute(
+            select(Company.status, Opportunity.salary_max, Opportunity.salary_min)
+            .join(Opportunity, Opportunity.company_id == Company.id)
+        )
+    ).all()
+    value_by_stage: Dict[str, float] = {}
+    deals_by_stage: Dict[str, int] = {}
+    for row in opp_value_rows:
+        st = row.status or "discovered"
+        estimate = row.salary_max or row.salary_min or 0.0
+        value_by_stage[st] = value_by_stage.get(st, 0.0) + estimate
+        deals_by_stage[st] = deals_by_stage.get(st, 0) + 1
+
     pipeline_stages = [
-        {"stage": "New Leads", "value": 14000, "deals": 4},
-        {"stage": "Researched", "value": 38000, "deals": 6},
-        {"stage": "Contacted", "value": 26000, "deals": 3},
-        {"stage": "In Discussion", "value": 18000, "deals": 2},
-        {"stage": "Closed Won", "value": 45000, "deals": 5},
+        {"stage": "New Leads", "value": value_by_stage.get("discovered", 0), "deals": deals_by_stage.get("discovered", 0)},
+        {"stage": "Researched", "value": value_by_stage.get("researched", 0), "deals": deals_by_stage.get("researched", 0)},
+        {"stage": "Contacted", "value": value_by_stage.get("contacted", 0), "deals": deals_by_stage.get("contacted", 0)},
+        {"stage": "In Discussion", "value": value_by_stage.get("meeting", 0), "deals": deals_by_stage.get("meeting", 0)},
+        {"stage": "Closed Won", "value": value_by_stage.get("client", 0), "deals": deals_by_stage.get("client", 0)},
     ]
 
     # 6. Contact Acquisition Graph
@@ -201,46 +203,72 @@ async def get_dashboard_analytics(db: AsyncSession = Depends(get_db)):
     verified_count = sum(1 for c in contacts if c.email_confidence in ["high", "verified"])
 
     contact_acquisition = [
-        {"category": "Decision Makers", "count": max(dm_count, 12)},
-        {"category": "Influencers / Eng", "count": max(non_dm_count, 8)},
-        {"category": "Verified Emails", "count": max(verified_count, 15)},
+        {"category": "Decision Makers", "count": dm_count},
+        {"category": "Influencers / Eng", "count": non_dm_count},
+        {"category": "Verified Emails", "count": verified_count},
     ]
 
-    # 7. Activity Timeline
-    timeline = [
-        {
-            "id": "t1",
+    # 7. Activity Timeline: built only from real, persisted events - recent agent runs,
+    # proposals awaiting approval, and inbound outreach replies. No invented companies,
+    # people, or outcomes. Empty when nothing has happened yet.
+    timeline: List[Dict[str, Any]] = []
+
+    recent_runs = (
+        await db.execute(
+            select(AgentRun.id, AgentRun.agent_name, AgentRun.status, AgentRun.started_at, AgentRun.duration_ms)
+            .order_by(desc(AgentRun.started_at))
+            .limit(5)
+        )
+    ).all()
+    for run in recent_runs:
+        timeline.append({
+            "id": f"run-{run.id}",
             "type": "agent",
-            "title": "Daily Discovery Workflow Completed",
-            "timestamp": "12 minutes ago",
-            "badge": "success",
-            "detail": "18 new opportunities identified across RemoteOK and LinkedIn.",
-        },
-        {
-            "id": "t2",
-            "type": "research",
-            "title": "Deep Research Report Generated",
-            "timestamp": "45 minutes ago",
-            "badge": "completed",
-            "detail": "Acme Health Tech fit score calculated at 94/100.",
-        },
-        {
-            "id": "t3",
+            "title": f"{run.agent_name.replace('_', ' ').title()} {run.status}",
+            "timestamp": run.started_at.isoformat() if run.started_at else None,
+            "badge": "success" if run.status in ("completed", "success") else run.status,
+            "detail": f"Finished in {run.duration_ms}ms" if run.duration_ms else "Run in progress",
+        })
+
+    recent_proposals = (
+        await db.execute(
+            select(Proposal.id, Proposal.subject, Proposal.created_at)
+            .where(Proposal.status == "draft")
+            .order_by(desc(Proposal.created_at))
+            .limit(3)
+        )
+    ).all()
+    for prop in recent_proposals:
+        timeline.append({
+            "id": f"proposal-{prop.id}",
             "type": "proposal",
             "title": "AI Proposal Awaiting Approval",
-            "timestamp": "2 hours ago",
+            "timestamp": prop.created_at.isoformat() if prop.created_at else None,
             "badge": "pending",
-            "detail": "Elena Rostova (VP Eng, Acme Health) - 'Accelerating Acme Health's FastAPI Pipeline'.",
-        },
-        {
-            "id": "t4",
+            "detail": prop.subject or "Draft proposal ready for review",
+        })
+
+    recent_replies = (
+        await db.execute(
+            select(OutreachHistory.id, OutreachHistory.replied_at, OutreachHistory.reply_classification, Contact.full_name)
+            .join(Contact, Contact.id == OutreachHistory.contact_id, isouter=True)
+            .where(OutreachHistory.replied_at.isnot(None))
+            .order_by(desc(OutreachHistory.replied_at))
+            .limit(3)
+        )
+    ).all()
+    for reply in recent_replies:
+        timeline.append({
+            "id": f"reply-{reply.id}",
             "type": "outreach",
-            "title": "Positive Email Reply Received",
-            "timestamp": "3 hours ago",
-            "badge": "replied",
-            "detail": "Marcus Vance (FinFlow): 'Let's schedule 15m this Thursday.'",
-        },
-    ]
+            "title": "Reply Received",
+            "timestamp": reply.replied_at.isoformat() if reply.replied_at else None,
+            "badge": reply.reply_classification or "replied",
+            "detail": f"{reply.full_name} replied" if reply.full_name else "A contact replied",
+        })
+
+    timeline.sort(key=lambda e: e["timestamp"] or "", reverse=True)
+    timeline = timeline[:6]
 
     return {
         "opportunity_discovery": score_buckets,

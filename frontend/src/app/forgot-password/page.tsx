@@ -170,34 +170,40 @@ function ForgotPasswordContent() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0d1117] flex flex-col justify-center py-12 sm:px-6 lg:px-8 text-[#e6edf3]">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+    <div className="min-h-screen bg-black flex flex-col justify-center py-12 sm:px-6 lg:px-8 text-zinc-100 relative overflow-hidden">
+      {/* Ambient background glow, consistent with the rest of the app */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <div className="w-[600px] h-[600px] bg-red-600/[0.08] blur-[150px] animate-aurora rounded-full absolute -top-40 left-1/2 -translate-x-1/2" />
+        <div className="w-[500px] h-[500px] bg-red-600/[0.05] blur-[140px] animate-aurora-red rounded-full absolute bottom-0 -right-20" />
+      </div>
+
+      <div className="relative z-10 sm:mx-auto sm:w-full sm:max-w-md">
         <Link href="/" className="flex items-center justify-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#1f6feb] to-[#a371f7] flex items-center justify-center text-white shadow-lg shadow-[#1f6feb]/20 font-bold">
-            <Lock className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-white/90 via-white/70 to-white/40 flex items-center justify-center text-black shadow-lg shadow-white/10 font-bold">
+            <Lock className="w-4 h-4" />
           </div>
-          <span className="text-xl font-bold tracking-tight text-white">EJICODE AI</span>
+          <span className="text-xl font-bold tracking-tight text-white font-mono">EJICODE_AI</span>
         </Link>
 
         {/* 8-Step Progress Indicator */}
         <div className="mb-6 px-4">
-          <div className="flex items-center justify-between text-xs font-mono text-[#8b949e] mb-2">
+          <div className="flex items-center justify-between text-xs font-mono text-zinc-500 mb-2">
             <span>Security Recovery Flow</span>
-            <span className="text-[#58a6ff] font-semibold">Step {step} of 8</span>
+            <span className="text-red-400 font-semibold">Step {step} of 8</span>
           </div>
-          <div className="w-full bg-[#21262d] h-1.5 rounded-full overflow-hidden">
+          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
             <div
-              className="bg-gradient-to-r from-[#1f6feb] to-[#2ea043] h-full transition-all duration-300 rounded-full"
+              className="bg-gradient-to-r from-red-500 to-white h-full transition-all duration-300 rounded-full"
               style={{ width: `${(step / 8) * 100}%` }}
             ></div>
           </div>
         </div>
       </div>
 
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-[#161b22] py-8 px-6 shadow-2xl border border-[#30363d] rounded-2xl sm:px-10">
+      <div className="relative z-10 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="apple-glass py-8 px-6 rounded-3xl sm:px-10">
           {errorMsg && (
-            <div className="mb-6 p-4 rounded-xl bg-red-900/30 border border-red-700/50 flex items-start gap-3 text-red-200 text-sm">
+            <div className="mb-6 p-4 rounded-xl bg-red-950/40 border border-red-500/30 flex items-start gap-3 text-red-200 text-sm">
               <AlertCircle className="w-5 h-5 shrink-0 text-red-400 mt-0.5" />
               <div>{errorMsg}</div>
             </div>
@@ -208,25 +214,25 @@ function ForgotPasswordContent() {
             <div>
               <div className="text-center mb-6">
                 <h2 className="text-2xl font-bold text-white">Reset your password</h2>
-                <p className="text-sm text-[#8b949e] mt-2">
+                <p className="text-sm text-zinc-400 mt-2">
                   Enter your verified account email address to receive a secure single-use recovery token.
                 </p>
               </div>
 
               <form onSubmit={handleRequestToken} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-[#c9d1d9] mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
                     Account Email Address
                   </label>
                   <div className="relative">
-                    <Mail className="w-5 h-5 absolute left-3 top-2.5 text-[#8b949e]" />
+                    <Mail className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                     <input
                       type="email"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="name@company.com"
-                      className="w-full pl-10 pr-4 py-2.5 bg-[#0d1117] border border-[#30363d] rounded-xl text-white text-sm focus:outline-none focus:border-[#1f6feb] transition-colors"
+                      className="w-full pl-9 pr-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-red-400/50 transition-colors"
                     />
                   </div>
                 </div>
@@ -234,7 +240,7 @@ function ForgotPasswordContent() {
                 <button
                   type="submit"
                   disabled={isSubmitting || !email}
-                  className="w-full mt-2 py-3 px-4 bg-[#1f6feb] hover:bg-[#388bfd] disabled:opacity-50 text-white font-semibold rounded-xl transition-all shadow-md shadow-[#1f6feb]/20 flex items-center justify-center gap-2"
+                  className="apple-button-primary w-full mt-2 py-3 px-4 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   <span>Send Recovery Token</span>
                   <ArrowRight className="w-4 h-4" />
@@ -246,11 +252,11 @@ function ForgotPasswordContent() {
           {/* STEP 2: Dispatching animation */}
           {step === 2 && (
             <div className="text-center py-8 space-y-4">
-              <div className="w-14 h-14 rounded-full bg-[#1f6feb]/15 border border-[#1f6feb]/40 flex items-center justify-center mx-auto text-[#58a6ff] animate-pulse">
+              <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center mx-auto text-white animate-pulse">
                 <RefreshCw className="w-6 h-6 animate-spin" />
               </div>
               <h3 className="text-lg font-bold text-white">Dispatching Recovery Instructions…</h3>
-              <p className="text-xs text-[#8b949e]">
+              <p className="text-xs text-zinc-500">
                 Encrypting single-use cryptographic token with SHA-256 and verified expiration.
               </p>
             </div>
@@ -259,23 +265,23 @@ function ForgotPasswordContent() {
           {/* STEP 3: Email sent confirmation */}
           {step === 3 && (
             <div className="text-center py-4 space-y-5">
-              <div className="w-14 h-14 rounded-full bg-[#238636]/15 border border-[#238636]/40 flex items-center justify-center mx-auto text-[#2ea043]">
+              <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-400/30 flex items-center justify-center mx-auto text-emerald-400">
                 <Mail className="w-7 h-7" />
               </div>
               <div>
                 <h3 className="text-xl font-bold text-white">Recovery token dispatched</h3>
-                <p className="text-sm text-[#8b949e] mt-2">
+                <p className="text-sm text-zinc-400 mt-2">
                   If an account exists for <span className="text-white font-medium">{email}</span>, a secure recovery code has been generated.
                 </p>
               </div>
 
               {devTokenNotice && (
-                <div className="p-3 bg-[#0d1117] rounded-xl border border-[#30363d] text-left">
-                  <div className="text-[11px] font-mono uppercase text-[#d29922] font-semibold flex items-center gap-1.5 mb-1">
+                <div className="p-3 bg-black/40 rounded-xl border border-white/10 text-left">
+                  <div className="text-[11px] font-mono uppercase text-amber-400 font-semibold flex items-center gap-1.5 mb-1">
                     <Sparkles className="w-3.5 h-3.5" />
                     Dev Sandbox Token:
                   </div>
-                  <div className="text-xs font-mono text-[#58a6ff] break-all select-all bg-[#161b22] p-2 rounded">
+                  <div className="text-xs font-mono text-red-300 break-all select-all bg-white/5 p-2 rounded">
                     {devTokenNotice}
                   </div>
                 </div>
@@ -286,18 +292,18 @@ function ForgotPasswordContent() {
                   if (devTokenNotice) setToken(devTokenNotice);
                   setStep(4);
                 }}
-                className="w-full py-3 px-4 bg-[#1f6feb] hover:bg-[#388bfd] text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                className="apple-button-primary w-full py-3 px-4 flex items-center justify-center gap-2 text-sm"
               >
                 <span>Enter Recovery Token</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
-              <div className="text-xs text-[#8b949e]">
+              <div className="text-xs text-zinc-500">
                 Didn&apos;t receive it?{' '}
                 <button
                   disabled={resendCooldown > 0}
                   onClick={handleRequestToken}
-                  className="text-[#58a6ff] hover:underline disabled:opacity-50"
+                  className="text-red-400 hover:text-red-300 hover:underline disabled:opacity-50"
                 >
                   Resend code {resendCooldown > 0 ? `(${resendCooldown}s)` : ''}
                 </button>
@@ -310,25 +316,25 @@ function ForgotPasswordContent() {
             <div>
               <div className="text-center mb-6">
                 <h2 className="text-xl font-bold text-white">Verify Recovery Token</h2>
-                <p className="text-xs text-[#8b949e] mt-1.5">
+                <p className="text-xs text-zinc-500 mt-1.5">
                   Paste the 64-character verification code delivered to your email.
                 </p>
               </div>
 
               <form onSubmit={handleVerifyToken} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-[#c9d1d9] mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
                     Security Token
                   </label>
                   <div className="relative">
-                    <KeyRound className="w-5 h-5 absolute left-3 top-2.5 text-[#8b949e]" />
+                    <KeyRound className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                     <input
                       type="text"
                       required
                       value={token}
                       onChange={(e) => setToken(e.target.value)}
                       placeholder="Paste token here"
-                      className="w-full pl-10 pr-4 py-2.5 bg-[#0d1117] border border-[#30363d] rounded-xl text-white font-mono text-xs focus:outline-none focus:border-[#1f6feb]"
+                      className="w-full pl-9 pr-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-red-400/50"
                     />
                   </div>
                 </div>
@@ -336,7 +342,7 @@ function ForgotPasswordContent() {
                 <button
                   type="submit"
                   disabled={isSubmitting || token.length < 8}
-                  className="w-full py-3 px-4 bg-[#1f6feb] hover:bg-[#388bfd] disabled:opacity-50 text-white font-semibold rounded-xl transition-all shadow-md flex items-center justify-center gap-2"
+                  className="apple-button-primary w-full py-3 px-4 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   <span>Verify Token</span>
                   <ArrowRight className="w-4 h-4" />
@@ -345,7 +351,7 @@ function ForgotPasswordContent() {
                 <button
                   type="button"
                   onClick={() => setStep(1)}
-                  className="w-full text-xs text-[#8b949e] hover:text-white transition-colors"
+                  className="w-full text-xs text-zinc-500 hover:text-white transition-colors"
                 >
                   ← Request a different email
                 </button>
@@ -356,11 +362,11 @@ function ForgotPasswordContent() {
           {/* STEP 5: Token verifying animation */}
           {step === 5 && (
             <div className="text-center py-8 space-y-4">
-              <div className="w-14 h-14 rounded-full bg-[#1f6feb]/15 border border-[#1f6feb]/40 flex items-center justify-center mx-auto text-[#58a6ff]">
+              <div className="w-14 h-14 rounded-full bg-white/10 border border-white/20 flex items-center justify-center mx-auto text-white">
                 <RefreshCw className="w-6 h-6 animate-spin" />
               </div>
               <h3 className="text-lg font-bold text-white">Verifying Token Signature…</h3>
-              <p className="text-xs text-[#8b949e]">
+              <p className="text-xs text-zinc-500">
                 Checking token hash against database single-use ledger.
               </p>
             </div>
@@ -371,40 +377,40 @@ function ForgotPasswordContent() {
             <div>
               <div className="text-center mb-6">
                 <h2 className="text-xl font-bold text-white">Create New Password</h2>
-                <p className="text-xs text-[#8b949e] mt-1.5">
+                <p className="text-xs text-zinc-500 mt-1.5">
                   Choose a strong, unique password for your account.
                 </p>
               </div>
 
               <form onSubmit={handleResetPassword} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-[#c9d1d9] mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
                     New Password
                   </label>
                   <div className="relative">
-                    <Lock className="w-5 h-5 absolute left-3 top-2.5 text-[#8b949e]" />
+                    <Lock className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                     <input
                       type="password"
                       required
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full pl-10 pr-4 py-2.5 bg-[#0d1117] border border-[#30363d] rounded-xl text-white text-sm focus:outline-none focus:border-[#1f6feb]"
+                      className="w-full pl-9 pr-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-red-400/50"
                     />
                   </div>
 
                   {/* Password Strength Meter */}
                   <div className="mt-2 space-y-1">
-                    <div className="flex justify-between text-[11px] text-[#8b949e]">
+                    <div className="flex justify-between text-[11px] text-zinc-500">
                       <span>Strength</span>
-                      <span className={strength >= 75 ? 'text-[#2ea043]' : strength >= 50 ? 'text-[#d29922]' : 'text-red-400'}>
+                      <span className={strength >= 75 ? 'text-emerald-400' : strength >= 50 ? 'text-amber-400' : 'text-red-400'}>
                         {strength >= 75 ? 'Strong' : strength >= 50 ? 'Medium' : 'Weak'}
                       </span>
                     </div>
-                    <div className="w-full bg-[#21262d] h-1.5 rounded-full overflow-hidden">
+                    <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
                       <div
                         className={`h-full transition-all duration-300 rounded-full ${
-                          strength >= 75 ? 'bg-[#2ea043]' : strength >= 50 ? 'bg-[#d29922]' : 'bg-red-500'
+                          strength >= 75 ? 'bg-emerald-500' : strength >= 50 ? 'bg-amber-500' : 'bg-red-500'
                         }`}
                         style={{ width: `${strength}%` }}
                       ></div>
@@ -413,18 +419,18 @@ function ForgotPasswordContent() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-[#c9d1d9] mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">
                     Confirm New Password
                   </label>
                   <div className="relative">
-                    <Lock className="w-5 h-5 absolute left-3 top-2.5 text-[#8b949e]" />
+                    <Lock className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                     <input
                       type="password"
                       required
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full pl-10 pr-4 py-2.5 bg-[#0d1117] border border-[#30363d] rounded-xl text-white text-sm focus:outline-none focus:border-[#1f6feb]"
+                      className="w-full pl-9 pr-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-red-400/50"
                     />
                   </div>
                 </div>
@@ -432,7 +438,7 @@ function ForgotPasswordContent() {
                 <button
                   type="submit"
                   disabled={isSubmitting || strength < 50 || newPassword !== confirmPassword}
-                  className="w-full py-3 px-4 bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-white font-semibold rounded-xl transition-all shadow-md shadow-[#238636]/20 flex items-center justify-center gap-2"
+                  className="apple-button-primary w-full py-3 px-4 disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   <ShieldCheck className="w-4 h-4" />
                   <span>Update Password</span>
@@ -444,11 +450,11 @@ function ForgotPasswordContent() {
           {/* STEP 7: Resetting animation */}
           {step === 7 && (
             <div className="text-center py-8 space-y-4">
-              <div className="w-14 h-14 rounded-full bg-[#238636]/15 border border-[#238636]/40 flex items-center justify-center mx-auto text-[#2ea043]">
+              <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-400/30 flex items-center justify-center mx-auto text-emerald-400">
                 <RefreshCw className="w-6 h-6 animate-spin" />
               </div>
               <h3 className="text-lg font-bold text-white">Updating Credentials…</h3>
-              <p className="text-xs text-[#8b949e]">
+              <p className="text-xs text-zinc-500">
                 Invalidating prior sessions and updating cryptographic bcrypt hash.
               </p>
             </div>
@@ -457,19 +463,19 @@ function ForgotPasswordContent() {
           {/* STEP 8: Success Complete */}
           {step === 8 && (
             <div className="text-center py-6 space-y-5">
-              <div className="w-16 h-16 rounded-full bg-[#238636]/20 border border-[#238636]/50 flex items-center justify-center mx-auto text-[#2ea043] shadow-lg shadow-[#238636]/20">
+              <div className="w-16 h-16 rounded-full bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center mx-auto text-emerald-400 shadow-lg shadow-emerald-500/10">
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <div>
                 <h3 className="text-2xl font-extrabold text-white">Password Reset Successful!</h3>
-                <p className="text-sm text-[#8b949e] mt-2">
+                <p className="text-sm text-zinc-400 mt-2">
                   Your credentials have been securely updated. You can now sign in with your new password.
                 </p>
               </div>
 
               <Link
                 href="/login"
-                className="w-full py-3 px-4 bg-[#1f6feb] hover:bg-[#388bfd] text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-2"
+                className="apple-button-primary w-full py-3 px-4 flex items-center justify-center gap-2 text-sm"
               >
                 <span>Proceed to Sign In</span>
                 <ArrowRight className="w-4 h-4" />
@@ -477,8 +483,8 @@ function ForgotPasswordContent() {
             </div>
           )}
 
-          <div className="mt-6 pt-4 border-t border-[#30363d] text-center">
-            <Link href="/login" className="inline-flex items-center gap-1.5 text-xs text-[#8b949e] hover:text-white transition-colors">
+          <div className="mt-6 pt-4 border-t border-white/10 text-center">
+            <Link href="/login" className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-white transition-colors">
               <ArrowLeft className="w-3.5 h-3.5" />
               Back to Sign In
             </Link>
@@ -491,7 +497,7 @@ function ForgotPasswordContent() {
 
 export default function ForgotPasswordPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400 text-sm">Loading recovery portal...</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-black flex items-center justify-center text-zinc-500 text-sm">Loading recovery portal...</div>}>
       <ForgotPasswordContent />
     </Suspense>
   );
