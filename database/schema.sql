@@ -304,3 +304,200 @@ INSERT INTO settings (key, value, description) VALUES
 }', 'Outreach rate limits')
 ON CONFLICT (key) DO NOTHING;
 
+-- ============================================================
+-- ORGANIZATIONS (MULTI-TENANCY)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS organizations (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name            VARCHAR(255) NOT NULL,
+    slug            VARCHAR(255) UNIQUE NOT NULL,
+    domain          VARCHAR(255),
+    plan            VARCHAR(50) DEFAULT 'pro',
+    billing_email   VARCHAR(255),
+    settings        JSONB DEFAULT '{}',
+    status          VARCHAR(50) DEFAULT 'active',
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_organizations_slug ON organizations(slug);
+
+CREATE TABLE IF NOT EXISTS organization_members (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    role            VARCHAR(50) DEFAULT 'member',
+    permissions     JSONB DEFAULT '[]',
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
+
+-- ============================================================
+-- USER PROFILES (INDIVIDUAL USERS)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_profiles (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id             UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+    full_name           VARCHAR(255),
+    title               VARCHAR(255),
+    bio                 TEXT,
+    skills              JSONB DEFAULT '[]',
+    experience_years    NUMERIC(4,1) DEFAULT 0.0,
+    experience          JSONB DEFAULT '[]',
+    education           JSONB DEFAULT '[]',
+    portfolio_url       TEXT,
+    github_url          TEXT,
+    linkedin_url        TEXT,
+    resume_url          TEXT,
+    certifications      JSONB DEFAULT '[]',
+    location            VARCHAR(255),
+    preferred_locations JSONB DEFAULT '[]',
+    remote_preference   VARCHAR(50) DEFAULT 'remote',
+    job_types           JSONB DEFAULT '["contract", "full-time"]',
+    salary_min          NUMERIC(12,2),
+    salary_max          NUMERIC(12,2),
+    salary_currency     VARCHAR(10) DEFAULT 'USD',
+    technologies        JSONB DEFAULT '[]',
+    career_goals        TEXT,
+    ai_candidate_summary JSONB DEFAULT '{}',
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user ON user_profiles(user_id);
+
+-- ============================================================
+-- CANDIDATES (ENTERPRISE TALENT PIPELINE)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS candidates (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id     UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    full_name           VARCHAR(255) NOT NULL,
+    email               VARCHAR(255),
+    phone               VARCHAR(50),
+    title               VARCHAR(255),
+    skills              JSONB DEFAULT '[]',
+    experience_summary  TEXT,
+    location            VARCHAR(255),
+    github_url          TEXT,
+    linkedin_url        TEXT,
+    portfolio_url       TEXT,
+    resume_text         TEXT,
+    status              VARCHAR(50) DEFAULT 'discovered',
+    match_score         INTEGER DEFAULT 0,
+    match_explanation   TEXT,
+    source              VARCHAR(100) DEFAULT 'ai_scout',
+    notes               TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_org ON candidates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
+
+-- ============================================================
+-- WORKFLOW EXECUTIONS & AGENT LOCKING
+-- ============================================================
+CREATE TABLE IF NOT EXISTS workflow_executions (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workflow_type   VARCHAR(100) NOT NULL,
+    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
+    organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+    status          VARCHAR(50) DEFAULT 'pending',
+    current_step    VARCHAR(100),
+    lock_token      VARCHAR(255),
+    input_params    JSONB DEFAULT '{}',
+    output_summary  JSONB DEFAULT '{}',
+    error_message   TEXT,
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_wf_exec_status ON workflow_executions(status);
+CREATE INDEX IF NOT EXISTS idx_wf_exec_user ON workflow_executions(user_id);
+CREATE INDEX IF NOT EXISTS idx_wf_exec_org ON workflow_executions(organization_id);
+
+CREATE TABLE IF NOT EXISTS workflow_steps (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workflow_execution_id   UUID REFERENCES workflow_executions(id) ON DELETE CASCADE,
+    agent_name              VARCHAR(100) NOT NULL,
+    step_index              INTEGER DEFAULT 0,
+    status                  VARCHAR(50) DEFAULT 'waiting',
+    input_data              JSONB DEFAULT '{}',
+    output_data             JSONB DEFAULT '{}',
+    retry_count             INTEGER DEFAULT 0,
+    max_retries             INTEGER DEFAULT 3,
+    error_message           TEXT,
+    execution_logs          JSONB DEFAULT '[]',
+    started_at              TIMESTAMPTZ,
+    completed_at            TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_wf_step_exec ON workflow_steps(workflow_execution_id);
+CREATE INDEX IF NOT EXISTS idx_wf_step_status ON workflow_steps(status);
+
+-- ============================================================
+-- REJECTION LOGS (PERSISTENT LEARNING)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS rejection_logs (
+    id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id                     UUID REFERENCES users(id) ON DELETE SET NULL,
+    opportunity_id              UUID REFERENCES opportunities(id) ON DELETE SET NULL,
+    contact_id                  UUID REFERENCES contacts(id) ON DELETE SET NULL,
+    rejection_source            VARCHAR(50) DEFAULT 'recipient_reply',
+    rejection_reason            TEXT,
+    feedback_analysis           JSONB DEFAULT '{}',
+    similar_search_triggered    BOOLEAN DEFAULT FALSE,
+    similar_organizations_found JSONB DEFAULT '[]',
+    alternate_contacts_found    JSONB DEFAULT '[]',
+    created_at                  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rejection_logs_user ON rejection_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_rejection_logs_opp ON rejection_logs(opportunity_id);
+
+-- ============================================================
+-- FOLLOW-UP SCHEDULES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS follow_up_schedules (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    outreach_id     UUID REFERENCES outreach_history(id) ON DELETE CASCADE,
+    contact_id      UUID REFERENCES contacts(id) ON DELETE CASCADE,
+    proposal_id     UUID REFERENCES proposals(id) ON DELETE SET NULL,
+    sequence_step   INTEGER DEFAULT 1,
+    delay_days      INTEGER DEFAULT 3,
+    scheduled_for   TIMESTAMPTZ NOT NULL,
+    status          VARCHAR(50) DEFAULT 'scheduled',
+    cancel_reason   VARCHAR(100),
+    subject         TEXT,
+    body_draft      TEXT,
+    sent_at         TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_followup_sched_outreach ON follow_up_schedules(outreach_id);
+CREATE INDEX IF NOT EXISTS idx_followup_sched_status ON follow_up_schedules(status);
+
+-- ============================================================
+-- PASSWORD RESET TOKENS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  VARCHAR(255) UNIQUE NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used        BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pwd_reset_tokens_user ON password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_pwd_reset_tokens_hash ON password_reset_tokens(token_hash);
+
+

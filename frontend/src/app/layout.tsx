@@ -5,15 +5,19 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, useEffect, ReactNode } from 'react';
 
+const PUBLIC_PATHS = ['/', '/login', '/register', '/forgot-password'];
+
 const navLinks = [
-  { href: '/', label: 'Dashboard', icon: '⊞' },
-  { href: '/companies', label: 'Companies', icon: '🏢' },
+  { href: '/dashboard', label: 'Platform Overview', icon: '⊞' },
+  { href: '/individual/dashboard', label: 'Candidate Hub', icon: '👤' },
+  { href: '/enterprise/dashboard', label: 'Talent Pipeline', icon: '🏢' },
   { href: '/opportunities', label: 'Opportunities', icon: '🎯' },
-  { href: '/contacts', label: 'Contacts', icon: '👤' },
-  { href: '/research', label: 'Research', icon: '🔬' },
+  { href: '/companies', label: 'Companies', icon: '🌐' },
+  { href: '/contacts', label: 'Contacts', icon: '👥' },
+  { href: '/research', label: 'Deep Research', icon: '🔬' },
   { href: '/proposals', label: 'Proposals', icon: '📄' },
-  { href: '/outreach', label: 'Outreach', icon: '📧' },
-  { href: '/agents', label: 'Agents', icon: '🤖' },
+  { href: '/outreach', label: 'Outreach & Follow-Up', icon: '📧' },
+  { href: '/agents', label: 'Agents & Workflows', icon: '🤖' },
   { href: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
@@ -131,15 +135,19 @@ function AuthGuard({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState<boolean | null>(null);
 
   useEffect(() => {
+    if (PUBLIC_PATHS.includes(pathname)) {
+      setAuthed(true);
+      return;
+    }
     const token = localStorage.getItem('token');
-    if (!token && pathname !== '/login') {
+    if (!token) {
       router.replace('/login');
     } else {
       setAuthed(true);
     }
   }, [pathname, router]);
 
-  if (pathname === '/login') return <>{children}</>;
+  if (PUBLIC_PATHS.includes(pathname)) return <>{children}</>;
   if (authed === null) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-vscode-bg">
@@ -182,16 +190,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('account_type');
     router.push('/login');
   };
 
-  const isLogin = pathname === '/login';
+  const isPublic = PUBLIC_PATHS.includes(pathname);
 
   return (
     <html lang="en">
       <body className="bg-vscode-bg min-h-screen text-vscode-text transition-colors duration-150">
         <AuthGuard>
-          {isLogin ? (
+          {isPublic ? (
             children
           ) : (
             <div className="flex min-h-screen">
@@ -203,7 +212,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <div className="flex items-center gap-3">
                     <span>⚡ Ejicode AI BD Engine</span>
                     <span>•</span>
-                    <span>Model: Gemini 2.5 Flash</span>
+                    <span>Multi-Agent Autonomous Pipeline</span>
                     <span>•</span>
                     <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span> Live Pipeline Active</span>
                   </div>

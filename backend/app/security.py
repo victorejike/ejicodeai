@@ -22,6 +22,8 @@ class User(BaseModel):
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
+    account_type: str = "individual"
+    organization_id: Optional[str] = None
     roles: List[str] = ["user"]
     is_active: bool = True
     is_superuser: bool = False
@@ -33,6 +35,10 @@ class TokenPayload(BaseModel):
     type: str
     roles: List[str] = ["user"]
     email: Optional[str] = None
+    full_name: Optional[str] = None
+    user_id: Optional[str] = None
+    account_type: Optional[str] = "individual"
+    organization_id: Optional[str] = None
 
 
 def hash_password(password: str) -> str:
@@ -104,6 +110,8 @@ async def authenticate_user_db(session: AsyncSession, username_or_email: str, pa
                 username=db_user.username,
                 email=db_user.email,
                 full_name=db_user.full_name or "",
+                account_type=getattr(db_user, "account_type", "individual") or "individual",
+                organization_id=str(db_user.organization_id) if getattr(db_user, "organization_id", None) else None,
                 roles=db_user.roles or ["user"],
                 is_active=db_user.is_active,
                 is_superuser=db_user.is_superuser,
@@ -125,8 +133,25 @@ async def authenticate_user_db(session: AsyncSession, username_or_email: str, pa
     return None
 
 
-def create_access_token(username: str, roles: list[str], expires_delta: Optional[timedelta] = None, email: Optional[str] = None) -> str:
-    payload: dict[str, Any] = {"sub": username, "type": "access", "roles": roles}
+def create_access_token(
+    username: str,
+    roles: list[str],
+    expires_delta: Optional[timedelta] = None,
+    email: Optional[str] = None,
+    user_id: Optional[str] = None,
+    full_name: Optional[str] = None,
+    account_type: Optional[str] = "individual",
+    organization_id: Optional[str] = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "sub": username,
+        "type": "access",
+        "roles": roles,
+        "user_id": str(user_id) if user_id else None,
+        "full_name": full_name,
+        "account_type": account_type or "individual",
+        "organization_id": str(organization_id) if organization_id else None,
+    }
     if email:
         payload["email"] = email
     return _create_token(payload, expires_delta=expires_delta or timedelta(hours=settings.access_token_expire_hours))
@@ -143,8 +168,12 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     payload = _decode_token(token)
     token_data = TokenPayload(**payload)
     return User(
+        id=token_data.user_id,
         username=token_data.sub,
         email=token_data.email,
+        full_name=token_data.full_name,
+        account_type=token_data.account_type or "individual",
+        organization_id=token_data.organization_id,
         roles=token_data.roles,
         is_active=True,
     )

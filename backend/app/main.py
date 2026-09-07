@@ -10,7 +10,21 @@ from backend.app.config import get_settings
 from backend.app.database import close_db, init_db
 from backend.app.metrics import PrometheusMiddleware, metrics_endpoint
 from backend.app.rate_limiter import RateLimitMiddleware
-from backend.app.routers import agents, auth, companies, contacts, dashboard, opportunities, outreach, proposals, rag, reports
+from backend.app.routers import (
+    agents,
+    auth,
+    companies,
+    contacts,
+    dashboard,
+    enterprise,
+    individual,
+    opportunities,
+    outreach,
+    proposals,
+    public,
+    rag,
+    reports,
+)
 from backend.app.security import get_current_active_user
 
 # Configure logging
@@ -114,8 +128,11 @@ def create_app() -> FastAPI:
         return metrics_endpoint()
     
     # API v1 routes
+    app.include_router(public.router, prefix="/v1/public", tags=["Public"])
     app.include_router(auth.router, prefix="/v1/auth", tags=["Auth"])
     auth_dependency = [Depends(get_current_active_user)]
+    app.include_router(individual.router, prefix="/v1/individual", tags=["Individual"], dependencies=auth_dependency)
+    app.include_router(enterprise.router, prefix="/v1/enterprise", tags=["Enterprise"], dependencies=auth_dependency)
     app.include_router(companies.router, prefix="/v1/companies", tags=["Companies"], dependencies=auth_dependency)
     app.include_router(opportunities.router, prefix="/v1/opportunities", tags=["Opportunities"], dependencies=auth_dependency)
     app.include_router(contacts.router, prefix="/v1/contacts", tags=["Contacts"], dependencies=auth_dependency)
