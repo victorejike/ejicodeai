@@ -10,7 +10,7 @@ The primary objective of the INDIVIDUAL version of EJICODE AI is:
 
 EJICODE AI acts as an intelligent AI career agent that continuously works to market the individual professionally, discover relevant opportunities, position the individual against those opportunities, prepare personalized applications and outreach, track responses, learn from rejection, and continue searching until the user achieves a successful outcome.
 
-The product must NOT feel like a normal job board.
+The product must NOT feel like a normal job board
 
 The user must feel like they have an AI career team working for them 24/7.
 
