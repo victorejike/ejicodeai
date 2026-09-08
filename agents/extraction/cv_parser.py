@@ -17,17 +17,17 @@ logger = logging.getLogger(__name__)
 # Standard Skills Taxonomy for precise keyword matching
 SKILLS_TAXONOMY = [
     # Languages
-    "Python", "TypeScript", "JavaScript", "Go", "Golang", "Rust", "Java", "C++", "C#", "Ruby", "PHP", "Swift", "Kotlin", "SQL", "HTML", "CSS", "R", "Scala", "Dart", "Elixir", "Bash", "Shell",
+    "Python", "TypeScript", "JavaScript", "Go", "Golang", "Rust", "Java", "C++", "C#", "Ruby", "PHP", "Swift", "Kotlin", "SQL", "HTML", "CSS", "R", "Scala", "Dart", "Elixir", "Bash", "Shell", "Solidity",
     # Frameworks & Libraries
-    "FastAPI", "Django", "Flask", "React", "React Native", "Next.js", "Vue", "Vue.js", "Angular", "Node.js", "Express", "NestJS", "Spring", "Spring Boot", ".NET", "Rails", "Ruby on Rails", "Tailwind CSS", "GraphQL", "REST", "gRPC", "Flutter",
+    "FastAPI", "Django", "Flask", "React", "React Native", "Next.js", "Vue", "Vue.js", "Angular", "Node.js", "Express", "NestJS", "Spring", "Spring Boot", ".NET", "Rails", "Ruby on Rails", "Tailwind CSS", "GraphQL", "REST", "gRPC", "Flutter", "Svelte",
     # Databases & Caching
     "PostgreSQL", "MySQL", "SQLite", "MongoDB", "Redis", "Elasticsearch", "Cassandra", "DynamoDB", "Firebase", "Firestore", "Supabase", "Snowflake", "ClickHouse", "Neo4j", "ChromaDB", "Pinecone", "Qdrant", "Weaviate",
     # Cloud & DevOps
-    "AWS", "Amazon Web Services", "GCP", "Google Cloud", "Azure", "Docker", "Kubernetes", "Terraform", "Ansible", "CI/CD", "GitHub Actions", "GitLab CI", "Linux", "Nginx", "Helm", "Prometheus", "Grafana",
+    "AWS", "Amazon Web Services", "GCP", "Google Cloud", "Azure", "Docker", "Kubernetes", "Terraform", "Ansible", "CI/CD", "GitHub Actions", "GitLab CI", "Linux", "Nginx", "Helm", "Prometheus", "Grafana", "Datadog", "OpenTelemetry",
     # AI / ML / Data
     "Machine Learning", "Deep Learning", "PyTorch", "TensorFlow", "scikit-learn", "Pandas", "NumPy", "OpenAI", "LangChain", "LlamaIndex", "Hugging Face", "NLP", "Computer Vision", "LLMs", "RAG", "Fine-tuning", "Transformers",
     # Architecture & Practices
-    "Microservices", "System Design", "Distributed Systems", "TDD", "Agile", "Scrum", "API Design", "Event-Driven Architecture", "Kafka", "RabbitMQ"
+    "Microservices", "System Design", "Distributed Systems", "TDD", "Agile", "Scrum", "API Design", "Event-Driven Architecture", "Kafka", "RabbitMQ", "OAuth", "JWT"
 ]
 
 
@@ -76,7 +76,7 @@ def extract_raw_text(file_bytes: bytes, file_type: str) -> str:
 
 def extract_contact_info(text: str) -> Dict[str, Optional[str]]:
     """Extract contact information strictly from text. Missing items are None."""
-    contact = {
+    contact: Dict[str, Optional[str]] = {
         "email": None,
         "phone": None,
         "linkedin": None,
@@ -90,12 +90,12 @@ def extract_contact_info(text: str) -> Dict[str, Optional[str]]:
     if email_match:
         contact["email"] = email_match.group(0).strip()
 
-    # Phone
-    phone_match = re.search(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", text)
+    # Phone: international or national formats
+    phone_match = re.search(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}", text)
     if phone_match:
         phone_candidate = phone_match.group(0).strip()
-        # Verify it has at least 7 digits to avoid false positives with dates
-        if len(re.sub(r"\D", "", phone_candidate)) >= 7:
+        digits = re.sub(r"\D", "", phone_candidate)
+        if 8 <= len(digits) <= 15:
             contact["phone"] = phone_candidate
 
     # LinkedIn
@@ -118,25 +118,37 @@ def extract_contact_info(text: str) -> Dict[str, Optional[str]]:
             contact["portfolio"] = url_clean
             break
 
-    # Location heuristic (requires explicit prefix or clear location line)
-    loc_match = re.search(r"(?:Location|Address|Based in|Lives in)[:\s]+([^\r\n]+)", text[:1500], re.IGNORECASE)
+    # Location heuristic (explicit prefix or common City, State/Country format)
+    loc_match = re.search(r"(?:Location|Address|Based in|Lives in|Residing in|City)[:\s]+([^\r\n,]+(?:,\s*[^\r\n]+)?)", text[:1500], re.IGNORECASE)
     if loc_match:
         candidate_loc = loc_match.group(1).strip()
         if len(candidate_loc) < 60:
             contact["location"] = candidate_loc
+    else:
+        # Check header lines for City, Country / State
+        geo_pattern = re.compile(
+            r"(?:^|[\r\n|•·])\s*([A-Z][a-zA-Z ]+,\s*(?:[A-Z]{2}|USA|US|UK|United Kingdom|Canada|Germany|Nigeria|France|Australia|Netherlands|Spain|Italy|India|Singapore|South Africa|Sweden|Ireland|Switzerland|Poland|Brazil|Remote))\b",
+            re.IGNORECASE | re.MULTILINE
+        )
+        geo_match = geo_pattern.search(text[:1200])
+        if geo_match:
+            cand = geo_match.group(1).strip()
+            if len(cand) < 50:
+                contact["location"] = cand
 
     return contact
+
 
 
 def segment_sections(text: str) -> Dict[str, str]:
     """Segment CV into logical sections (summary, experience, education, skills, projects, certifications)."""
     section_patterns = {
-        "summary": r"(?:summary|profile|about\s+me|professional\s+summary|objective)",
-        "experience": r"(?:work\s+experience|professional\s+experience|experience|employment\s+history|career\s+history)",
-        "education": r"(?:education|academic\s+background|qualifications|academic\s+history)",
-        "skills": r"(?:skills|technical\s+skills|core\s+competencies|proficiencies|technologies)",
-        "projects": r"(?:projects|key\s+projects|personal\s+projects|open\s+source)",
-        "certifications": r"(?:certifications|licenses|courses|accreditations)",
+        "summary": r"(?:summary|profile|about\s*(?:me)?|professional\s+summary|executive\s+summary|objective|career\s+objective|career\s+profile)",
+        "experience": r"(?:work\s+experience|professional\s+experience|experience|employment\s+history|career\s+history|work\s+history|employment)",
+        "education": r"(?:education|academic\s+background|qualifications|academic\s+history|academics)",
+        "skills": r"(?:skills|technical\s+skills|core\s+competencies|proficiencies|technologies|technical\s+proficiencies|tools|tech\s+stack)",
+        "projects": r"(?:projects|key\s+projects|personal\s+projects|open\s+source|selected\s+projects)",
+        "certifications": r"(?:certifications|certificates|licenses|courses|accreditations)",
     }
 
     lines = text.split("\n")
@@ -158,16 +170,35 @@ def segment_sections(text: str) -> Dict[str, str]:
 
         matched_section = None
         for sec_name, pattern in section_patterns.items():
-            if re.match(r"^#*\s*" + pattern + r"[:\s]*$", stripped, re.IGNORECASE):
+            if re.match(r"^#*\s*\*?" + pattern + r"\*?[:\s]*$", stripped, re.IGNORECASE):
                 matched_section = sec_name
                 break
 
         if matched_section:
             current_section = matched_section
         else:
-            sections[current_section].append(stripped)
+            if current_section in sections:
+                sections[current_section].append(stripped)
 
     return {k: "\n".join(v).strip() for k, v in sections.items() if v}
+
+
+def extract_summary_intelligence(sections: Dict[str, str], raw_text: str) -> Optional[str]:
+    """Extract professional summary or bio from segmented sections or early text paragraphs."""
+    summary_text = sections.get("summary")
+    if summary_text and len(summary_text.strip()) >= 20:
+        lines = [l.strip("•-* \t") for l in summary_text.split("\n") if l.strip()]
+        return " ".join(lines)
+
+    # If no explicit summary section, check between header and first section
+    header_text = sections.get("header", "")
+    if header_text:
+        lines = [l.strip() for l in header_text.split("\n") if l.strip()]
+        for line in lines[2:]:
+            if len(line) >= 40 and not re.search(r"[@/\\:|]", line):
+                return line
+
+    return None
 
 
 def extract_skills_intelligence(text: str, sections: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -200,79 +231,114 @@ def extract_skills_intelligence(text: str, sections: Dict[str, str]) -> List[Dic
 
 
 def extract_experience_intelligence(experience_text: str) -> Tuple[List[Dict[str, Any]], float]:
-    """Parse work experience entries, calculating duration and extracting role/company/bullets."""
+    """Parse work experience entries, calculating duration and extracting role/company/bullets.
+    
+    Handles standard ranges (Jan 2020 - Present), em-dash / tab separators (Role — Company \t Present),
+    and multi-line headline structures.
+    """
     if not experience_text:
         return [], 0.0
 
-    entries: List[Dict[str, Any]] = []
-    # Match patterns like "Jan 2020 - Present", "2018 - 2022", "06/2019 – 08/2021"
-    date_regex = re.compile(
+    date_range_regex = re.compile(
         r"(?P<start>(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[a-z]*\s+\d{4}|\d{1,2}/\d{4}|\d{4}))"
         r"\s*[-–—to]+\s*"
         r"(?P<end>(?:Present|Current|Now|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[a-z]*\s+\d{4}|\d{1,2}/\d{4}|\d{4}))",
         re.IGNORECASE
     )
 
+    role_indicators = [
+        r"engineer", r"developer", r"architect", r"lead", r"founder", r"director",
+        r"manager", r"specialist", r"consultant", r"contributor", r"analyst",
+        r"designer", r"head", r"officer", r"intern", r"administrator", r"coordinator",
+        r"scientist", r"researcher", r"vp", r"creator"
+    ]
+    role_pattern = re.compile(r"\b(?:" + "|".join(role_indicators) + r")\b", re.IGNORECASE)
+
+    entries: List[Dict[str, Any]] = []
     lines = [l.strip() for l in experience_text.split("\n") if l.strip()]
     current_entry: Optional[Dict[str, Any]] = None
     all_years = []
-    previous_line = ""
 
     for line in lines:
-        date_match = date_regex.search(line)
-        if date_match:
+        date_range_m = date_range_regex.search(line)
+        pres_m = re.search(r"[\t|—–\s]\b(Present|Current|Now)\b", line, re.IGNORECASE)
+        has_role = bool(role_pattern.search(line))
+        has_sep = bool(re.search(r"[\t|—–]|\bat\b", line))
+        is_bullet = line.startswith(('•', '-', '*', '— ', '– '))
+
+        # Case A: Date range line modifying an existing entry whose dates were placeholder
+        if current_entry and date_range_m and not has_role and (current_entry.get('start_date') in ('Recent', 'Past')):
+            current_entry['start_date'] = date_range_m.group('start')
+            current_entry['end_date'] = date_range_m.group('end')
+            current_entry['is_current'] = bool(re.search(r"present|current|now", current_entry['end_date'], re.IGNORECASE))
+            for ym in re.finditer(r"\b(19\d{2}|20\d{2})\b", line):
+                all_years.append(int(ym.group(1)))
+            continue
+
+        # Case B: Line is a new job headline
+        is_headline = False
+        if not is_bullet:
+            if has_role and (has_sep or date_range_m or pres_m):
+                is_headline = True
+            elif date_range_m and len(line) < 120:
+                is_headline = True
+            elif has_role and len(line) < 90 and not line.endswith('.'):
+                if not re.match(r'^(?:deliver|founded|direct|architect|contribute|designed|performed|built|implemented|maintained)\b', line, re.IGNORECASE):
+                    is_headline = True
+
+        if is_headline:
             if current_entry:
                 entries.append(current_entry)
 
-            start_str = date_match.group("start")
-            end_str = date_match.group("end")
-            is_current = bool(re.search(r"present|current|now", end_str, re.IGNORECASE))
+            start_str = "Recent"
+            end_str = "Present"
+            is_current = False
 
-            # Extract years for total experience estimation
-            start_year_m = re.search(r"\b(19\d{2}|20\d{2})\b", start_str)
-            end_year_m = re.search(r"\b(19\d{2}|20\d{2})\b", end_str)
-            
-            s_year = int(start_year_m.group(1)) if start_year_m else None
-            e_year = datetime.now().year if is_current else (int(end_year_m.group(1)) if end_year_m else None)
+            if date_range_m:
+                start_str = date_range_m.group('start')
+                end_str = date_range_m.group('end')
+                is_current = bool(re.search(r"present|current|now", end_str, re.IGNORECASE))
+                cleaned_line = line[:date_range_m.start()].strip() + ' ' + line[date_range_m.end():].strip()
+            elif pres_m:
+                is_current = True
+                end_str = "Present"
+                cleaned_line = line[:pres_m.start()].strip()
+            else:
+                cleaned_line = line
 
-            if s_year and e_year and e_year >= s_year:
-                all_years.append((s_year, e_year))
+            for ym in re.finditer(r"\b(19\d{2}|20\d{2})\b", line):
+                all_years.append(int(ym.group(1)))
 
-            # Line before or remaining text often contains Role and Company
-            headline = line[:date_match.start()].strip() + " " + line[date_match.end():].strip()
-            headline = headline.strip(" |-,•")
-            if not headline and previous_line:
-                headline = previous_line.strip(" |-,•")
-
-            parts = [p.strip() for p in re.split(r" at | \| |, ", headline) if p.strip()]
+            cleaned_line = cleaned_line.strip(" |-,•—–\t")
+            parts = [p.strip() for p in re.split(r"[\t|—–]|\bat\b|, ", cleaned_line) if p.strip()]
             role = parts[0] if parts else "Professional Role"
-            company = parts[1] if len(parts) > 1 else None
+            company = parts[1] if len(parts) > 1 else "Organization"
 
             current_entry = {
                 "title": role,
-                "company": company or "Organization",
+                "company": company,
                 "start_date": start_str,
                 "end_date": end_str,
                 "is_current": is_current,
                 "bullets": [],
             }
         elif current_entry:
-            clean_bullet = line.lstrip("•-*• \t")
+            clean_bullet = line.lstrip("•-*—– \t")
             if clean_bullet:
                 current_entry["bullets"].append(clean_bullet)
-        previous_line = line
 
     if current_entry:
         entries.append(current_entry)
 
-    # Compute total continuous experience years avoiding simple overlaps
     total_years = 0.0
     if all_years:
-        min_year = min(y[0] for y in all_years)
-        max_year = max(y[1] for y in all_years)
-        total_years = float(max_year - min_year)
-        if total_years < 1.0 and all_years:
-            total_years = 1.0
+        min_y = min(all_years)
+        max_y = max(all_years)
+        if any(e.get("is_current") for e in entries):
+            max_y = datetime.now().year
+        total_years = max(1.0, float(max_y - min_y))
+    elif entries:
+        total_years = float(max(1, len(entries) * 2))
 
     return entries, total_years
 
@@ -293,13 +359,49 @@ def extract_education_intelligence(education_text: str) -> List[Dict[str, Any]]:
             if re.search(r"\b" + re.escape(kw) + r"\b", line, re.IGNORECASE):
                 year_match = re.search(r"\b(19\d{2}|20\d{2})\b", line)
                 grad_year = int(year_match.group(1)) if year_match else None
+                
+                # Split institution by comma or em-dash
+                parts = [p.strip() for p in re.split(r"[,—–\t]", line) if p.strip()]
+                institution = parts[1] if len(parts) > 1 and not kw.lower() in parts[1].lower() else parts[0]
+                institution = re.sub(r"\b(in progress|ongoing|completed)\b", "", institution, flags=re.IGNORECASE).strip()
+
                 entries.append({
                     "degree": kw,
-                    "institution": line.split(",")[0].strip(),
+                    "institution": institution or line,
                     "year": grad_year,
                     "details": line,
                 })
                 break
+
+    return entries
+
+
+def extract_certifications_intelligence(certifications_text: str) -> List[Dict[str, Any]]:
+    """Parse certifications, licenses, and issuing authorities."""
+    if not certifications_text:
+        return []
+
+    entries = []
+    lines = [l.strip() for l in certifications_text.split("\n") if l.strip()]
+
+    for line in lines:
+        clean_line = line.lstrip("•-* \t")
+        if len(clean_line) < 3:
+            continue
+        year_match = re.search(r"\b(19\d{2}|20\d{2})\b", clean_line)
+        year = int(year_match.group(1)) if year_match else None
+        
+        # Split issuer if format is "Cert Name - Issuer" or "Cert Name, Issuer"
+        parts = re.split(r"[-–—|,]\s*", clean_line)
+        name = parts[0].strip()
+        issuer = parts[1].strip() if len(parts) > 1 else None
+
+        entries.append({
+            "name": name,
+            "issuer": issuer,
+            "year": year,
+            "details": clean_line,
+        })
 
     return entries
 
@@ -335,6 +437,32 @@ def extract_projects_intelligence(projects_text: str) -> List[Dict[str, Any]]:
     return projects
 
 
+def extract_career_goals_intelligence(
+    sections: Dict[str, str],
+    summary: Optional[str],
+    title: Optional[str],
+    skills: List[str]
+) -> Optional[str]:
+    """Extract or infer truthful career goals from objectives, summary, or target role."""
+    summary_raw = sections.get("summary", "")
+    obj_match = re.search(r"(?:Objective|Career Objective|Goal)[:\s]+([^\r\n.]+)", summary_raw, re.IGNORECASE)
+    if obj_match:
+        return obj_match.group(1).strip()
+
+    if summary and any(k in summary.lower() for k in ("seeking", "looking to", "aiming to", "focusing on")):
+        for sentence in re.split(r"[.!?]", summary):
+            if any(k in sentence.lower() for k in ("seeking", "looking to", "aiming to", "focusing on")):
+                return sentence.strip()
+
+    if title:
+        top_skills = skills[:3]
+        if top_skills:
+            return f"Advance career as {title} specializing in {', '.join(top_skills)}."
+        return f"Advance career as {title}."
+
+    return None
+
+
 def parse_cv_document(file_bytes: bytes, filename: str, file_type: str) -> Dict[str, Any]:
     """Master CV Ingestion function.
     Reads file bytes, extracts text, breaks into sections, extracts high-fidelity fields,
@@ -349,25 +477,53 @@ def parse_cv_document(file_bytes: bytes, filename: str, file_type: str) -> Dict[
     sections = segment_sections(raw_text)
     contact = extract_contact_info(raw_text)
     skills = extract_skills_intelligence(raw_text, sections)
+    skills_list = [s["name"] for s in skills]
     experience, years_exp = extract_experience_intelligence(sections.get("experience", raw_text))
     education = extract_education_intelligence(sections.get("education", ""))
+    certifications = extract_certifications_intelligence(sections.get("certifications", ""))
     projects = extract_projects_intelligence(sections.get("projects", ""))
+    bio = extract_summary_intelligence(sections, raw_text)
 
     # First name / Full name heuristic from header or first line
     header_lines = [l.strip() for l in (sections.get("header") or raw_text).split("\n") if l.strip()]
     full_name = None
-    if header_lines:
-        first_line = header_lines[0]
-        # Avoid lines that look like emails, URLs, or headers
-        if len(first_line) < 50 and not re.search(r"[@/\\:|]", first_line):
-            full_name = first_line
+    ignored_headers = ("curriculum vitae", "resume", "cv", "personal details", "profile", "contact information")
+    
+    for candidate_line in header_lines[:5]:
+        clean_line = candidate_line.strip("#* \t")
+        if clean_line.lower() in ignored_headers:
+            continue
+        # Check for explicit Name label
+        name_labeled = re.search(r"^(?:Name|Candidate)[:\s]+([A-Za-z\s.'-]+)$", clean_line, re.IGNORECASE)
+        if name_labeled:
+            full_name = name_labeled.group(1).strip()
+            break
+        # Avoid lines that look like emails, URLs, phone numbers, or section headers
+        if len(clean_line) < 50 and not re.search(r"[@/\\:|0-9]", clean_line):
+            words = clean_line.split()
+            if 1 <= len(words) <= 4 and all(w[0].isupper() for w in words if w):
+                full_name = clean_line
+                break
 
     # Headline / Target Title heuristic
     title = None
-    if len(header_lines) > 1 and len(header_lines[1]) < 60 and not re.search(r"[@/\\:]", header_lines[1]):
-        title = header_lines[1]
-    elif experience:
+    for candidate_line in header_lines[1:6]:
+        clean_line = candidate_line.strip("#* \t")
+        if clean_line == full_name or clean_line.lower() in ignored_headers:
+            continue
+        title_labeled = re.search(r"^(?:Title|Role|Headline)[:\s]+([A-Za-z\s/&.-]+)$", clean_line, re.IGNORECASE)
+        if title_labeled:
+            title = title_labeled.group(1).strip()
+            break
+        if len(clean_line) < 60 and not re.search(r"[@/\\:]", clean_line) and not re.search(r"\b\d{3,}\b", clean_line):
+            if any(role_word in clean_line.lower() for role_word in ("engineer", "developer", "architect", "lead", "manager", "designer", "scientist", "consultant", "analyst", "specialist", "administrator")):
+                title = clean_line
+                break
+
+    if not title and experience:
         title = experience[0].get("title")
+
+    career_goals = extract_career_goals_intelligence(sections, bio, title, skills_list)
 
     # Overall Confidence Calculation
     confidence_signals = [
@@ -376,6 +532,7 @@ def parse_cv_document(file_bytes: bytes, filename: str, file_type: str) -> Dict[
         1.0 if experience else 0.0,
         1.0 if education else 0.5,
         1.0 if full_name else 0.3,
+        1.0 if bio else 0.4,
     ]
     confidence_score = round(sum(confidence_signals) / len(confidence_signals), 2)
 
@@ -387,12 +544,18 @@ def parse_cv_document(file_bytes: bytes, filename: str, file_type: str) -> Dict[
         "raw_text": raw_text,
         "full_name": full_name,
         "title": title,
+        "bio": bio,
+        "summary": bio,
+        "career_goals": career_goals,
         "contact_info": contact,
+        "location": contact.get("location"),
         "skills": skills,
-        "skills_list": [s["name"] for s in skills],
+        "skills_list": skills_list,
+        "technologies": skills_list,
         "experience": experience,
         "experience_years": years_exp,
         "education": education,
+        "certifications": certifications,
         "projects": projects,
         "raw_sections": sections,
         "confidence_score": confidence_score,

@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 from agents.base.base_agent import BaseAgent, AgentState, AgentStatus
+from agents.base.skill_vocabulary import canonicalize, extract_skills
 from agents.scrapers.base_adapter import clean_url
 
 logger = logging.getLogger(__name__)
@@ -77,19 +78,17 @@ class DataExtractionAgent(BaseAgent):
         if isinstance(tech, str):
             tech = [t.strip() for t in tech.split(",") if t.strip()]
 
-        # Common tech keywords detection in description if not already extracted
-        common_keywords = ["Python", "FastAPI", "Go", "Golang", "React", "Vue", "Docker", "Kubernetes", "PostgreSQL", "PyTorch", "AWS", "GCP", "ChromaDB", "LangGraph", "LLM", "TypeScript", "Node.js"]
-        found_tech = set(tech)
-        for kw in common_keywords:
-            if re.search(r"\b" + re.escape(kw) + r"\b", raw_desc, re.IGNORECASE):
-                found_tech.add(kw)
+        # Requirements named in the posting itself, read with the shared skill
+        # vocabulary (agents/data/skill_keywords.json) so the list of recognised
+        # technologies lives in one data file instead of inside this agent.
+        found_tech = list(canonicalize(list(tech) + extract_skills(raw_desc)))
 
         source_url = clean_url(raw.get("source_url") or raw.get("url"))
         company_url = clean_url(raw.get("company_url") or raw.get("website"))
 
         return {
-            "title": title or "Untitled Opportunity",
-            "company_name": company_name or "Unknown Organization",
+            "title": title or None,
+            "company_name": company_name or None,
             "company_domain": raw.get("company_domain"),
             "company_url": company_url,
             "source": raw.get("source", "scout"),
@@ -107,7 +106,9 @@ class DataExtractionAgent(BaseAgent):
             "contact_email": raw.get("contact_email") or raw.get("email"),
             "contact_role": raw.get("contact_role"),
             "company_size": raw.get("company_size"),
-            "industry": raw.get("industry") or "Technology",
+            # Not every employer is a tech company, and a posting that does not
+            # state its industry has not told us one.
+            "industry": raw.get("industry") or None,
         }
 
     async def process(self, state: AgentState) -> AgentState:
@@ -119,16 +120,25 @@ class DataExtractionAgent(BaseAgent):
         state["current_step"] = "extraction"
 
         extracted: List[Dict[str, Any]] = []
+        skipped = 0
         for item in raw_items:
             try:
-                extracted.append(self.extract_structured_opportunity(item))
+                record = self.extract_structured_opportunity(item)
             except Exception as e:
                 self.logger.warning("Failed extracting item: %s", e)
+                continue
+            # A record with no role title is not a usable opportunity, and naming
+            # it "Untitled Opportunity" would only hide that from the user.
+            if not record.get("title"):
+                skipped += 1
+                continue
+            extracted.append(record)
 
         state["status"] = AgentStatus.SUCCESS
         state["output_data"] = {
             "opportunities": extracted,
             "count": len(extracted),
+            "skipped_unusable": skipped,
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
         state["steps_completed"] = state.get("steps_completed", []) + ["extraction"]

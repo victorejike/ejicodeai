@@ -45,7 +45,7 @@ class MatchingAgent(BaseAgent):
         return min(score, 35), list(matched)
 
     @staticmethod
-    def _calculate_experience_match(candidate_years: float, title: str, description: Optional[str]) -> int:
+    def _calculate_experience_match(candidate_years: Optional[float], title: str, description: Optional[str]) -> int:
         text = f"{title} {description or ''}".lower()
         required_years = 0.0
 
@@ -62,6 +62,11 @@ class MatchingAgent(BaseAgent):
             required_years = max(required_years, 7.0)
         elif "junior" in text or "entry" in text:
             required_years = 1.0
+
+        if candidate_years is None:
+            # The candidate has not told us their years, so seniority fit is
+            # genuinely unknown. Score the midpoint and say so in the breakdown.
+            return 10
 
         if candidate_years >= required_years:
             return 20
@@ -134,12 +139,12 @@ class MatchingAgent(BaseAgent):
 
     def score_opportunity(self, opportunity: Dict[str, Any], candidate_profile: Dict[str, Any]) -> Dict[str, Any]:
         """Calculates multi-factor breakdown and overall match score (0-100)."""
-        skills_score, matched_skills = self._calculate_skills_match(
-            candidate_profile.get("skills", []),
-            opportunity.get("tech_required", []),
-        )
+        candidate_skills = candidate_profile.get("skills") or []
+        required_skills = opportunity.get("tech_required") or []
+
+        skills_score, matched_skills = self._calculate_skills_match(candidate_skills, required_skills)
         exp_score = self._calculate_experience_match(
-            candidate_profile.get("experience_years", 5.0),
+            candidate_profile.get("experience_years"),
             opportunity.get("title", ""),
             opportunity.get("description"),
         )
@@ -155,8 +160,8 @@ class MatchingAgent(BaseAgent):
             opportunity.get("salary_max"),
         )
         tech_score = self._calculate_tech_match(
-            candidate_profile.get("technologies") or candidate_profile.get("skills", []),
-            opportunity.get("tech_required", []),
+            candidate_profile.get("technologies") or candidate_skills,
+            required_skills,
         )
         goal_score = self._calculate_career_goal_match(
             candidate_profile.get("career_goals"),
@@ -166,15 +171,10 @@ class MatchingAgent(BaseAgent):
 
         overall = skills_score + exp_score + loc_score + salary_score + tech_score + goal_score
 
-        # Generate explanation
-        comp_name = opportunity.get("company_name", "the organization")
-        title = opportunity.get("title", "this role")
-        matched_str = ", ".join(matched_skills[:3]) if matched_skills else "core technical stack"
-        explanation = (
-            f"{overall}% match: Strong alignment on {matched_str} ({skills_score}/35 pts) "
-            f"and experience level ({exp_score}/20 pts) for {title} at {comp_name}. "
-            f"Compensation and location profile fit within preferred parameters."
-        )
+        missing_skills = [
+            s for s in required_skills
+            if str(s).lower().strip() not in {str(c).lower().strip() for c in candidate_skills}
+        ]
 
         scored_opp = dict(opportunity)
         scored_opp["match_score"] = overall
@@ -187,23 +187,97 @@ class MatchingAgent(BaseAgent):
             "career_goal_match": goal_score,
             "total_score": overall,
         }
-        scored_opp["match_explanation"] = explanation
+        scored_opp["matched_skills"] = matched_skills
+        scored_opp["missing_skills"] = missing_skills
+        scored_opp["match_explanation"] = self._explain(
+            opportunity=opportunity,
+            overall=overall,
+            skills_score=skills_score,
+            exp_score=exp_score,
+            loc_score=loc_score,
+            salary_score=salary_score,
+            goal_score=goal_score,
+            matched_skills=matched_skills,
+            missing_skills=missing_skills,
+            candidate_profile=candidate_profile,
+        )
         return scored_opp
+
+    @staticmethod
+    def _explain(
+        *,
+        opportunity: Dict[str, Any],
+        overall: int,
+        skills_score: int,
+        exp_score: int,
+        loc_score: int,
+        salary_score: int,
+        goal_score: int,
+        matched_skills: List[str],
+        missing_skills: List[str],
+        candidate_profile: Dict[str, Any],
+    ) -> str:
+        """A sentence per factor, each claim backed by the score that produced it.
+
+        The previous version asserted that pay and location "fit within preferred
+        parameters" for every opportunity, including the ones where they did not.
+        """
+        comp_name = opportunity.get("company_name") or "this employer"
+        title = opportunity.get("title") or "this role"
+
+        parts = [f"{overall}% match for {title} at {comp_name}."]
+
+        if matched_skills:
+            parts.append(
+                f"Skills {skills_score}/35 - you match {', '.join(sorted(matched_skills)[:4])}."
+            )
+        elif opportunity.get("tech_required"):
+            parts.append(f"Skills {skills_score}/35 - none of the listed requirements are on your profile.")
+        else:
+            parts.append(f"Skills {skills_score}/35 - the posting does not list specific requirements.")
+
+        if candidate_profile.get("experience_years") is None:
+            parts.append(f"Experience {exp_score}/20 - add your years of experience for an accurate score.")
+        else:
+            parts.append(f"Experience {exp_score}/20 against the seniority this posting implies.")
+
+        location = opportunity.get("location") or opportunity.get("location_type") or "unspecified"
+        parts.append(f"Location {loc_score}/10 ({location}).")
+
+        if opportunity.get("salary_min") or opportunity.get("salary_max"):
+            parts.append(f"Compensation {salary_score}/10 against your stated expectation.")
+        else:
+            parts.append(f"Compensation {salary_score}/10 - the posting states no salary.")
+
+        if candidate_profile.get("career_goals"):
+            parts.append(f"Career goal alignment {goal_score}/15.")
+
+        if missing_skills:
+            parts.append(f"Gaps to address: {', '.join(str(s) for s in missing_skills[:4])}.")
+
+        return " ".join(parts)
 
     async def process(self, state: AgentState) -> AgentState:
         input_data = state.get("input_data", {})
         opportunities = input_data.get("opportunities", [])
         candidate_profile = input_data.get("candidate_profile") or input_data.get("profile") or {}
 
-        # If no profile provided in input, use default senior engineer persona
-        if not candidate_profile:
-            candidate_profile = {
-                "skills": ["Python", "FastAPI", "Docker", "Kubernetes", "PostgreSQL", "Go"],
-                "experience_years": 6.0,
-                "remote_preference": "remote",
-                "salary_min": 120000,
-                "career_goals": "Architect scalable AI backend infrastructure and multi-agent platforms.",
+        # Scoring without the candidate's data would rank every user's jobs
+        # identically, so refuse instead of inventing a persona.
+        if not candidate_profile.get("skills") and not candidate_profile.get("title"):
+            self.logger.warning("Matching Agent: no candidate profile supplied; refusing to score")
+            state["status"] = AgentStatus.ESCALATED
+            state["escalation_reason"] = "missing_candidate_profile"
+            state["error_message"] = (
+                "Matching requires the candidate's own skills or title; none were provided."
+            )
+            state["output_data"] = {
+                "opportunities": [],
+                "best_match": None,
+                "average_match_score": 0,
+                "scored_at": datetime.now(timezone.utc).isoformat(),
             }
+            return state
 
         self.logger.info("Matching Agent: Scoring %d opportunities against candidate profile", len(opportunities))
         state["status"] = AgentStatus.RUNNING
@@ -219,6 +293,8 @@ class MatchingAgent(BaseAgent):
             "best_match": scored[0] if scored else None,
             "average_match_score": round(sum(s["match_score"] for s in scored) / len(scored), 1) if scored else 0,
             "scored_at": datetime.now(timezone.utc).isoformat(),
+            # Passed straight through so the next stage never has to re-query it.
+            "candidate_profile": candidate_profile,
         }
         state["steps_completed"] = state.get("steps_completed", []) + ["matching"]
         return state
@@ -239,16 +315,13 @@ class MatchingAgent(BaseAgent):
             }
         opportunities = input_data.get("opportunities", [])
         state: AgentState = {
-            "agent_id": self.agent_id,
+            "agent_name": self.name,
             "status": AgentStatus.PENDING,
             "current_step": "init",
             "input_data": {"opportunities": opportunities, "candidate_profile": candidate_profile},
             "output_data": {},
-            "errors": [],
-            "start_time": datetime.now(timezone.utc),
-            "end_time": None,
-            "retry_count": 0,
-            "execution_history": [],
+            "steps_completed": [],
+            "error_count": 0,
         }
         res = await self.process(state)
         return res["output_data"]

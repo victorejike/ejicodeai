@@ -19,6 +19,10 @@ class TestRankingAgent:
 
     def test_tech_match_scoring(self):
         agent = RankingAgent()
+        # Technology fit is measured against the candidate's own declared skills,
+        # not against a fixed idea of a "good" stack.
+        agent.load_candidate({"skills": ["Python", "FastAPI", "Docker", "PostgreSQL"]})
+
         # High match
         opp_high = {"tech_required": ["Python", "FastAPI", "Docker", "PostgreSQL"]}
         score_high = agent._score_tech_match(opp_high)
@@ -28,6 +32,31 @@ class TestRankingAgent:
         opp_zero = {"tech_required": ["COBOL", "Fortran", "Pascal"]}
         score_zero = agent._score_tech_match(opp_zero)
         assert score_zero == 0
+
+    def test_tech_match_without_candidate_skills_scores_zero(self):
+        """With no skills on file there is no basis to award technology points."""
+        agent = RankingAgent()
+        assert agent._score_tech_match({"tech_required": ["Python", "FastAPI"]}) == 0
+
+    def test_tech_match_differs_per_candidate(self):
+        """Two candidates must not receive the same technology score for one job."""
+        opportunity = {"tech_required": ["Python", "Django", "PostgreSQL", "Celery"]}
+
+        backend = RankingAgent()
+        backend.load_candidate({"skills": ["Python", "Django", "PostgreSQL", "Celery"]})
+
+        designer = RankingAgent()
+        designer.load_candidate({"skills": ["Figma", "UX Research", "Design Systems"]})
+
+        assert backend._score_tech_match(opportunity) > designer._score_tech_match(opportunity)
+
+    def test_compensation_scored_against_candidate_expectation(self):
+        agent = RankingAgent()
+        agent.load_candidate({"salary_min": 150000})
+        assert agent._score_compensation({"salary_max": 180000}) == 15
+        assert agent._score_compensation({"salary_max": 90000}) == 2
+        # Undisclosed pay is a weak signal regardless of expectation.
+        assert agent._score_compensation({}) == 3
 
     def test_company_fit_scoring(self):
         agent = RankingAgent()

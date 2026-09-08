@@ -1,7 +1,17 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Activity, Radio, CheckCircle, AlertCircle, Sparkles, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  Radio,
+  Sparkles,
+  Terminal,
+} from 'lucide-react';
+import PipelineProgress, { PipelineStage } from './PipelineProgress';
+import { cx } from './ui/cx';
 
 export interface AgentEvent {
   id: string;
@@ -12,168 +22,249 @@ export interface AgentEvent {
   timestamp: string;
 }
 
+const MAX_EVENTS = 60;
+
 export default function AgentEventFeed({
-  userId,
   orgId,
-  title = "Autonomous AI Agent Activity",
+  title = 'Autonomous AI Agent Activity',
+  /** Declared pipeline stages; pass them to show the ordered hand-off strip. */
+  stages,
+  /** Notified whenever the buffered event list changes. */
+  onEvents,
+  className,
 }: {
+  /** Accepted for call-site compatibility; the stream is scoped by the token. */
   userId?: string;
   orgId?: string;
   title?: string;
+  stages?: PipelineStage[];
+  onEvents?: (events: AgentEvent[]) => void;
+  className?: string;
 }) {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const onEventsRef = useRef(onEvents);
+  onEventsRef.current = onEvents;
 
   useEffect(() => {
-    // Build SSE URL
+    // EventSource cannot set an Authorization header, so the token travels as a
+    // query param and the proxy route turns it back into a header. Without it the
+    // backend has no way to know whose run to stream.
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const params = new URLSearchParams();
-    if (userId) params.append('user_id', userId);
-    if (orgId) params.append('organization_id', orgId);
+    if (token) params.set('access_token', token);
+    if (orgId) params.set('organization_id', orgId);
 
-    const streamUrl = `/api/events/stream?${params.toString()}`;
-    let es: EventSource;
+    let es: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    let attempt = 0;
 
-    try {
-      es = new EventSource(streamUrl);
-      eventSourceRef.current = es;
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(`/api/events/stream?${params.toString()}`);
+        eventSourceRef.current = es;
 
-      es.onopen = () => {
-        setIsConnected(true);
-      };
+        es.onopen = () => {
+          attempt = 0;
+          setIsConnected(true);
+        };
 
-      es.onmessage = (e) => {
-        try {
-          const parsed = JSON.parse(e.data);
-          if (parsed && parsed.message) {
+        es.onmessage = (e) => {
+          try {
+            const parsed = JSON.parse(e.data);
+            if (!parsed?.message) return;
             setEvents((prev) => {
-              // Avoid duplicates
-              if (prev.some((item) => item.id === parsed.id)) return prev;
-              const next = [...prev, parsed];
-              return next.slice(-40); // Keep last 40 events
+              if (parsed.id && prev.some((item) => item.id === parsed.id)) return prev;
+              return [...prev, parsed].slice(-MAX_EVENTS);
             });
+          } catch {
+            // keepalive frame or malformed payload - nothing to show
           }
-        } catch (err) {
-          // ignore keepalive or parse error
-        }
-      };
+        };
 
-      es.onerror = () => {
-        setIsConnected(false);
-      };
-    } catch (err) {
-      console.warn('Could not initialize EventSource:', err);
-    }
-
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
+        es.onerror = () => {
+          setIsConnected(false);
+          es?.close();
+          if (closed) return;
+          // Back off instead of hammering a backend that is restarting.
+          attempt += 1;
+          const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
+          retry = setTimeout(connect, delay);
+        };
+      } catch (err) {
+        console.warn('Could not initialize EventSource:', err);
       }
     };
-  }, [userId, orgId]);
+
+    connect();
+
+    return () => {
+      closed = true;
+      if (retry) clearTimeout(retry);
+      eventSourceRef.current?.close();
+    };
+  }, [orgId]);
+
+  useEffect(() => {
+    onEventsRef.current?.(events);
+  }, [events]);
 
   useEffect(() => {
     if (isExpanded && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [events, isExpanded]);
 
-  const getBadgeStyle = (type: string, severity: string) => {
-    if (severity === 'error') return 'border-red-500/30 text-red-400 bg-red-500/10';
-    if (severity === 'success') return 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10';
-    if (type.startsWith('cv.')) return 'border-purple-500/30 text-purple-400 bg-purple-500/10';
-    if (type.startsWith('opportunities.') || type.startsWith('talent.')) return 'border-cyan-500/30 text-cyan-400 bg-cyan-500/10';
-    return 'border-white/10 text-zinc-300 bg-white/5';
+  const badgeStyle = (type: string, severity: string) => {
+    if (severity === 'error') return 'border-[var(--border-red)] text-[var(--red)] bg-[var(--accent-light)]';
+    if (severity === 'warning') return 'border-[var(--border)] text-[var(--yellow)]';
+    if (severity === 'success') return 'border-[var(--border)] text-[var(--green)]';
+    if (type.startsWith('pipeline.')) return 'border-[var(--border)] text-[var(--purple)]';
+    if (type.startsWith('cv.')) return 'border-[var(--border)] text-[var(--purple)]';
+    if (type.startsWith('agent.')) return 'border-[var(--border)] text-[var(--blue)]';
+    return 'border-[var(--border)] text-[var(--text-muted)]';
   };
 
-  const formatEventType = (type: string) => {
-    if (type.startsWith('cv.uploaded')) return 'CV Ingestion';
-    if (type.startsWith('cv.extracted')) return 'Factual Intelligence';
-    if (type.startsWith('opportunities.matched')) return '6-Factor Match';
-    if (type.startsWith('talent.discovered')) return 'Live Headhunter';
-    if (type.startsWith('candidate.invited')) return 'Direct Outreach';
-    if (type.startsWith('requirement.')) return 'Requirement Engine';
-    return type.replace('.', ' ').toUpperCase();
+  // Labels for what the user is actually watching happen. Anything unmapped
+  // falls back to the raw event type rather than a made-up name.
+  const LABELS: Record<string, string> = {
+    'pipeline.started': 'Pipeline start',
+    'pipeline.stage_started': 'Stage start',
+    'pipeline.stage_completed': 'Stage done',
+    'pipeline.stage_failed': 'Stage failed',
+    'pipeline.completed': 'Pipeline done',
+    'pipeline.blocked': 'Blocked',
+    'agent.started': 'Agent start',
+    'agent.progress': 'Progress',
+    'agent.completed': 'Agent done',
+    'agent.failed': 'Agent failed',
+    'cv.built': 'ATS CV built',
+    'cv.uploaded': 'CV ingestion',
+    'cv.extracted': 'CV parsed',
+    'opportunities.matched': '6-factor match',
+    'system.connected': 'Connected',
+  };
+
+  const formatEventType = (type: string) =>
+    LABELS[type] ?? type.replace(/[._]/g, ' ').toUpperCase();
+
+  const renderPayload = (payload: any) => {
+    if (!payload || typeof payload !== 'object') return null;
+    const entries = Object.entries(payload).filter(([, v]) => {
+      if (v === null || v === undefined || v === '') return false;
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === 'object') return Object.keys(v as object).length > 0;
+      return true;
+    });
+    if (entries.length === 0) return null;
+
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px]">
+        {entries.slice(0, 8).map(([k, v]) => (
+          <span
+            key={k}
+            className="rounded border border-[var(--border)] bg-[var(--glass-subtle-bg)] px-1.5 py-0.5"
+          >
+            <span className="text-[var(--text-muted)]">{k.replace(/_/g, ' ')}:</span>{' '}
+            {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+          </span>
+        ))}
+      </div>
+    );
   };
 
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[#0c0c12]/90 backdrop-blur-2xl overflow-hidden shadow-2xl transition-all">
-      {/* Header */}
+    <div
+      className={cx(
+        'overflow-hidden rounded-2xl apple-glass-subtle transition-all',
+        className
+      )}
+    >
       <div
         onClick={() => setIsExpanded(!isExpanded)}
-        className="px-4 py-3 bg-white/[0.02] border-b border-white/[0.06] flex items-center justify-between cursor-pointer hover:bg-white/[0.04] transition-colors"
+        className="flex cursor-pointer items-center justify-between border-b border-[var(--border)] px-4 py-3 transition-colors hover:bg-[var(--glass-hover-bg)]"
       >
-        <div className="flex items-center gap-2.5">
-          <div className="relative flex h-2 w-2">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="relative flex h-2 w-2">
             <span
-              className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                isConnected ? 'bg-emerald-400' : 'bg-amber-400'
-              }`}
+              className={cx(
+                'absolute inline-flex h-full w-full animate-ping rounded-full opacity-75',
+                isConnected ? 'bg-[var(--green)]' : 'bg-[var(--yellow)]'
+              )}
             />
             <span
-              className={`relative inline-flex rounded-full h-2 w-2 ${
-                isConnected ? 'bg-emerald-500' : 'bg-amber-500'
-              }`}
+              className={cx(
+                'relative inline-flex h-2 w-2 rounded-full',
+                isConnected ? 'bg-[var(--green)]' : 'bg-[var(--yellow)]'
+              )}
             />
-          </div>
-          <div className="flex items-center gap-2 text-xs font-semibold tracking-wide text-white">
-            <Terminal className="w-3.5 h-3.5 text-red-400" />
-            <span>{title}</span>
-          </div>
-          <span className="text-[10px] px-2 py-0.5 rounded-full border border-white/[0.08] bg-white/[0.02] text-zinc-400 font-mono">
-            {isConnected ? 'LIVE FEED' : 'CONNECTING'}
+          </span>
+          <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[var(--text)]">
+            <Terminal className="h-3.5 w-3.5 text-[var(--accent)]" />
+            {title}
+          </span>
+          <span className="rounded-full border border-[var(--border)] px-2 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+            {isConnected ? 'LIVE FEED' : 'RECONNECTING'}
           </span>
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-[11px] text-zinc-500 font-mono">
+          <span className="font-mono text-[11px] text-[var(--text-muted)]">
             {events.length} {events.length === 1 ? 'event' : 'events'}
           </span>
           {isExpanded ? (
-            <ChevronUp className="w-4 h-4 text-zinc-400" />
+            <ChevronUp className="h-4 w-4 text-[var(--text-muted)]" />
           ) : (
-            <ChevronDown className="w-4 h-4 text-zinc-400" />
+            <ChevronDown className="h-4 w-4 text-[var(--text-muted)]" />
           )}
         </div>
       </div>
 
-      {/* Events Body */}
+      {stages && stages.length > 0 && (
+        <div className="border-b border-[var(--border)] px-4 py-4">
+          <PipelineProgress stages={stages} events={events} />
+        </div>
+      )}
+
       {isExpanded && (
-        <div className="p-3 max-h-56 overflow-y-auto space-y-2 font-mono text-xs scrollbar-thin scrollbar-thumb-white/10">
+        <div className="max-h-64 space-y-2 overflow-y-auto p-3 font-mono text-xs">
           {events.length === 0 ? (
-            <div className="py-6 text-center text-zinc-500 text-[11px] flex flex-col items-center gap-1.5">
-              <Radio className="w-4 h-4 animate-pulse text-zinc-600" />
-              <span>Awaiting agent workflow triggers…</span>
+            <div className="flex flex-col items-center gap-1.5 py-6 text-center text-[11px] text-[var(--text-muted)]">
+              <Radio className="h-4 w-4 animate-pulse" />
+              <span>No agent activity yet. Run the agents and each stage reports here.</span>
             </div>
           ) : (
             events.map((ev, i) => (
               <div
                 key={ev.id || i}
-                className="p-2.5 rounded-xl bg-black/40 border border-white/[0.04] flex items-start gap-2.5 hover:border-white/10 transition-colors"
+                className="flex items-start gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--glass-subtle-bg)] p-2.5 transition-colors hover:border-[var(--border-red)]"
               >
-                <div className="mt-0.5">
+                <span className="mt-0.5">
                   {ev.severity === 'success' ? (
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                    <CheckCircle className="h-3.5 w-3.5 text-[var(--green)]" />
                   ) : ev.severity === 'error' ? (
-                    <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <AlertCircle className="h-3.5 w-3.5 text-[var(--red)]" />
                   ) : (
-                    <Sparkles className="w-3.5 h-3.5 text-red-400" />
+                    <Sparkles className="h-3.5 w-3.5 text-[var(--accent)]" />
                   )}
-                </div>
+                </span>
 
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-center gap-2 flex-wrap">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${getBadgeStyle(
-                        ev.event_type,
-                        ev.severity
-                      )}`}
+                      className={cx(
+                        'rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider',
+                        badgeStyle(ev.event_type, ev.severity)
+                      )}
                     >
                       {formatEventType(ev.event_type)}
                     </span>
-                    <span className="text-[10px] text-zinc-500">
+                    <span className="text-[10px] text-[var(--text-muted)]">
                       {ev.timestamp
                         ? new Date(ev.timestamp).toLocaleTimeString([], {
                             hour: '2-digit',
@@ -184,19 +275,11 @@ export default function AgentEventFeed({
                     </span>
                   </div>
 
-                  <p className="text-zinc-200 text-[11px] leading-relaxed break-words">
+                  <p className="break-words text-[11px] leading-relaxed text-[var(--text)]">
                     {ev.message}
                   </p>
 
-                  {ev.payload && Object.keys(ev.payload).length > 0 && (
-                    <div className="text-[10px] text-zinc-400 flex items-center gap-2 flex-wrap pt-0.5">
-                      {Object.entries(ev.payload).map(([k, v]) => (
-                        <span key={k} className="bg-white/[0.03] px-1.5 py-0.2 rounded border border-white/[0.05]">
-                          <span className="text-zinc-500">{k}:</span> {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  {renderPayload(ev.payload)}
                 </div>
               </div>
             ))

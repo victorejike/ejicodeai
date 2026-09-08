@@ -15,7 +15,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 KNOWN_AGENTS = [
-    "supervisor", "job_scout", "company_scout", "research",
+    "supervisor", "career_pipeline", "job_scout", "company_scout", "research",
     "ranking", "contact_discovery", "knowledge_base",
     "proposal_generation", "outreach", "reply_monitoring",
 ]
@@ -96,38 +96,45 @@ async def list_agent_runs(
 # ---------------------------------------------------------------------------
 
 async def _run_job_scout(db: AsyncSession, run: AgentRun):
-    from agents.job_scout.job_scout_agent import JobScoutAgent
-    from agents.base.base_agent import AgentStatus
+    """Discovery, fanned out over every candidate the agents may run for.
 
-    agent = JobScoutAgent()
-    result = await agent.process(_base_state("job_scout"))
-    opportunities = result.get("output_data", {}).get("opportunities", [])
+    A single global scrape cannot know what to search for - the search terms come
+    from a candidate's own title and skills - so this runs the scout once per
+    agent-ready user and stores each user's own copy of what came back. Scores
+    stay untouched: matching is its own stage.
+    """
+    from backend.app.services.pipeline_dispatch import discover_for_user, list_agent_ready_users
 
+    candidates = await list_agent_ready_users(db)
+    if not candidates:
+        run.items_processed = 0
+        run.items_created = 0
+        run.status = "success"
+        run.error_message = (
+            "No user has a complete enough profile yet, so there was nothing to search for."
+        )
+        return
+
+    found = 0
     created = 0
-    for opp in opportunities:
-        url = opp.get("url", "")
-        if not url:
+    failures: list[str] = []
+    for candidate in candidates:
+        try:
+            result = await discover_for_user(candidate, db)
+        except Exception as exc:  # one bad profile must not stop the rest
+            logger.warning("Discovery failed for %s: %s", candidate.user_id, exc)
+            failures.append(str(candidate.user_id))
             continue
-        existing = await db.execute(select(Opportunity).where(Opportunity.source_url == url))
-        if existing.scalars().first():
-            continue
-        db.add(Opportunity(
-            title=opp.get("title", "Untitled")[:255],
-            type=opp.get("type", "job"),
-            status="new",
-            source_platform=opp.get("source_platform", "unknown"),
-            source_url=url,
-            location=opp.get("location", ""),
-            raw_description=opp.get("description", ""),
-            score=0,
-        ))
-        created += 1
+        found += result.get("found", 0)
+        created += result.get("created", 0)
+        if result.get("status") != "success":
+            failures.append(str(candidate.user_id))
 
-    await db.commit()
-    run.items_processed = len(opportunities)
+    run.items_processed = found
     run.items_created = created
-    run.status = "success" if result.get("status") == AgentStatus.SUCCESS else "failure"
-    run.error_message = result.get("error_message")
+    run.status = "failure" if len(failures) == len(candidates) else "success"
+    if failures:
+        run.error_message = f"{len(failures)} of {len(candidates)} candidates could not be searched."
 
 
 async def _run_company_scout(db: AsyncSession, run: AgentRun):
@@ -441,6 +448,126 @@ async def _run_supervisor(db: AsyncSession, run: AgentRun):
         run.error_message = f"Partial failures: {', '.join(failures)}"
 
 
+async def _run_career_pipeline(db: AsyncSession, run: AgentRun):
+    """Run the full per-user chain for every agent-ready candidate.
+
+    The same ordered hand-off the user triggers from their dashboard, run for
+    everyone at once - useful for an operator, and the shape the scheduled beat
+    task uses.
+    """
+    from agents.supervisor.career_pipeline import CareerPipeline
+
+    from backend.app.services.pipeline_dispatch import list_agent_ready_users
+
+    candidates = await list_agent_ready_users(db)
+    if not candidates:
+        run.items_processed = 0
+        run.items_created = 0
+        run.status = "success"
+        run.error_message = "No user has a complete enough profile yet."
+        return
+
+    pipeline = CareerPipeline()
+    completed = 0
+    blocked: list[str] = []
+    for candidate in candidates:
+        try:
+            result = await pipeline.run(candidate.user_id, trigger="operator")
+        except Exception as exc:
+            logger.warning("Pipeline failed for %s: %s", candidate.user_id, exc)
+            blocked.append(str(candidate.user_id))
+            continue
+        if result.get("status") == "completed":
+            completed += 1
+        else:
+            blocked.append(str(candidate.user_id))
+
+    run.items_processed = len(candidates)
+    run.items_created = completed
+    run.status = "failure" if completed == 0 else "success"
+    if blocked:
+        run.error_message = f"{len(blocked)} of {len(candidates)} runs did not finish."
+
+
+async def _run_proposal_generation(db: AsyncSession, run: AgentRun):
+    """Generate high-converting proposals for top-ranked opportunities with decision makers."""
+    from backend.app.models.core import Opportunity, Contact, Company, Proposal
+    from agents.proposal_generation.proposal_generation_agent import ProposalGenerationAgent
+    from agents.base.base_agent import AgentStatus
+
+    result_q = await db.execute(
+        select(Opportunity, Company)
+        .outerjoin(Company, Opportunity.company_id == Company.id)
+        .where(Opportunity.score >= 50)
+        .limit(5)
+    )
+    opp_rows = result_q.all()
+    if not opp_rows:
+        run.items_processed = 0
+        run.items_created = 0
+        run.status = "success"
+        return
+
+    agent = ProposalGenerationAgent()
+    created = 0
+    for opp, company in opp_rows:
+        existing = await db.execute(select(Proposal).where(Proposal.opportunity_id == opp.id))
+        if existing.scalars().first():
+            continue
+
+        contact = None
+        if company:
+            c_res = await db.execute(select(Contact).where(Contact.company_id == company.id).limit(1))
+            contact = c_res.scalars().first()
+
+        company_dict = {"name": company.name if company else (opp.company_name or "Target Company"), "domain": company.domain if company else ""}
+        contact_dict = {"email": contact.email if contact else "hiring@company.com", "title": contact.title if contact else "Hiring Manager"}
+        opp_dict = {"title": opp.title, "description": opp.description or ""}
+
+        state = _base_state("proposal_generation")
+        state["input_data"] = {
+            "opportunity_id": str(opp.id),
+            "contact_id": str(contact.id) if contact else str(opp.id),
+            "type": "outreach",
+            "tone": "professional",
+            "company_data": company_dict,
+            "contact_data": contact_dict,
+            "opportunity_data": opp_dict,
+        }
+        result = await agent.process(state)
+        if result.get("status") == AgentStatus.SUCCESS:
+            out = result.get("output_data", {})
+            subject_list = out.get("subjects") or ["Partnership Opportunity with Ejicode"]
+            p = Proposal(
+                opportunity_id=opp.id,
+                contact_id=contact.id if contact else None,
+                type="outreach",
+                tone="professional",
+                subject=subject_list[0],
+                body=out.get("body", "Proposal generated by autonomous agent"),
+                word_count=len((out.get("body") or "").split()),
+                generation_model="gemini-2.5-flash",
+                status="draft",
+            )
+            db.add(p)
+            created += 1
+
+    await db.commit()
+    run.items_processed = len(opp_rows)
+    run.items_created = created
+    run.status = "success"
+
+
+async def _run_outreach(db: AsyncSession, run: AgentRun):
+    """Review and prepare outreach communications for decision makers."""
+    from backend.app.models.core import Proposal
+    result_q = await db.execute(select(Proposal).where(Proposal.status == "draft").limit(10))
+    drafts = result_q.scalars().all()
+    run.items_processed = len(drafts)
+    run.items_created = 0
+    run.status = "success"
+
+
 AGENT_RUNNERS = {
     "job_scout": _run_job_scout,
     "company_scout": _run_company_scout,
@@ -448,8 +575,11 @@ AGENT_RUNNERS = {
     "research": _run_research,
     "contact_discovery": _run_contact_discovery,
     "knowledge_base": _run_knowledge_base,
+    "proposal_generation": _run_proposal_generation,
+    "outreach": _run_outreach,
     "reply_monitoring": _run_reply_monitoring,
     "supervisor": _run_supervisor,
+    "career_pipeline": _run_career_pipeline,
 }
 
 
@@ -471,7 +601,6 @@ async def _execute_agent(agent_name: str, run_id: str):
             if runner:
                 await runner(db, run)
             else:
-                # proposal_generation and outreach are triggered per-record, not in bulk
                 run.status = "success"
                 run.items_processed = 0
                 run.items_created = 0
@@ -483,6 +612,20 @@ async def _execute_agent(agent_name: str, run_id: str):
             run.completed_at = datetime.utcnow()
             run.duration_ms = int((datetime.utcnow() - start).total_seconds() * 1000)
             await db.commit()
+
+
+class AgentTriggerRequest(BaseModel):
+    agent_name: str = "supervisor"
+    trigger_type: Optional[str] = "manual"
+
+
+@router.post("/trigger")
+async def trigger_agent_generic(
+    payload: AgentTriggerRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    return await trigger_agent(payload.agent_name, background_tasks, db)
 
 
 @router.post("/{agent_name}/trigger")

@@ -9,9 +9,11 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.types import TypeDecorator, String as SAString
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -264,9 +266,20 @@ class Contact(Base):
 
 
 class Opportunity(Base):
-    """Opportunity model."""
+    """Opportunity model.
+
+    Scoping note: an opportunity row is *one user's view* of a posting - it
+    carries that user's match score and breakdown. Two candidates who both find
+    the same job each need their own row, so uniqueness is (user_id, source_url)
+    rather than source_url alone. Rows with a NULL user_id belong to the shared
+    business-development pipeline.
+    """
 
     __tablename__ = "opportunities"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_url", name="uq_opportunity_user_source_url"),
+        Index("ix_opportunities_source_url", "source_url"),
+    )
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     company_id = Column(GUID(), ForeignKey("companies.id"))
@@ -276,7 +289,7 @@ class Opportunity(Base):
     type = Column(String(50), nullable=False)
     pipeline_type = Column(String(50), default="employment")  # employment | freelance
     source_platform = Column(String(100))
-    source_url = Column(Text, unique=True)
+    source_url = Column(Text)
     all_sources = Column(JSON, default=list)  # [{"source": ..., "url": ...}]
     raw_description = Column(Text)
     parsed_data = Column(JSON)
@@ -288,11 +301,14 @@ class Opportunity(Base):
     tech_required = Column(JSON, default=list)
     score = Column(Integer, default=0)
     score_breakdown = Column(JSON)
-    quality_score = Column(Integer, default=0)
-    source_reliability_score = Column(Integer, default=0)
-    safety_status = Column(String(50), default="SAFE")  # SAFE, REVIEW, HIGH RISK, REJECTED
-    verification_confidence = Column(Integer, default=95)
-    freshness_status = Column(String(50), default="OPEN")  # OPEN, RECENT, AGING, EXPIRED, REMOVED, UNKNOWN
+    quality_score = Column(Integer)
+    source_reliability_score = Column(Integer)
+    safety_status = Column(String(50))  # SAFE, REVIEW, HIGH RISK, REJECTED
+    # Null until ValidationAgent has actually verified the posting. Never
+    # pre-filled with an optimistic number - an unverified job must not look
+    # verified to the user.
+    verification_confidence = Column(Integer)
+    freshness_status = Column(String(50))  # OPEN, RECENT, AGING, EXPIRED, REMOVED, UNKNOWN
     rank = Column(Integer)
     status = Column(String(50), default="new")
     posted_at = Column(DateTime(timezone=True))
@@ -638,6 +654,48 @@ class AgentEvent(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
 
 
+class GeneratedCV(Base):
+    """An ATS-optimised CV built by CVBuilderAgent for one candidate.
+
+    Stored per (user, opportunity) so a candidate keeps a tailored, auditable
+    version per application, plus a base version when opportunity_id is NULL.
+    The plain-text body is the source of truth - .docx/.pdf are rendered from it,
+    which is also what makes the output verifiably machine-readable.
+    """
+
+    __tablename__ = "generated_cvs"
+    __table_args__ = (
+        Index("ix_generated_cvs_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    opportunity_id = Column(GUID(), ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True, index=True)
+    version = Column(Integer, default=1)
+    label = Column(String(255))  # e.g. "Senior Backend Engineer - Nova Labs"
+    target_title = Column(String(255))
+    target_company = Column(String(255))
+
+    #: Canonical ATS-safe plain text. Renderers derive every other format.
+    content_text = Column(Text, nullable=False)
+    #: Section name -> rendered body, for editing individual sections in the UI.
+    sections = Column(JSON, default=dict)
+    cover_letter = Column(Text)
+
+    ats_score = Column(Integer, default=0)
+    ats_breakdown = Column(JSON, default=dict)  # keyword_coverage, format_safety, ...
+    keywords_matched = Column(JSON, default=list)
+    keywords_missing = Column(JSON, default=list)
+    format_warnings = Column(JSON, default=list)
+
+    generator = Column(String(50), default="template")  # ai | template
+    ai_provider = Column(String(50))
+    docx_path = Column(Text)
+    pdf_path = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 __all__ = [
     "AgentEvent",
     "AgentRun",
@@ -649,6 +707,7 @@ __all__ = [
     "CVExtraction",
     "Document",
     "FollowUpSchedule",
+    "GeneratedCV",
     "Opportunity",
     "Organization",
     "OrganizationMember",

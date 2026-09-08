@@ -60,42 +60,102 @@ def run_daily_discovery():
 
 @shared_task
 def run_job_scout():
-    """Run Job Scout Agent."""
-    logger.info("Job Scout: Starting job discovery")
-    
+    """Run discovery for every candidate whose profile the agents can work from.
+
+    Search terms come from a user's own title and skills, so there is no such
+    thing as a global run: this fans out one scout run per agent-ready user and
+    stores each user's own copy of the results.
+    """
+    logger.info("Job Scout: starting per-candidate discovery")
+
     try:
-        from agents.job_scout.job_scout_agent import JobScoutAgent
-        from agents.base.base_agent import AgentState, AgentStatus
-        
-        agent = JobScoutAgent()
-        
-        state = {
-            "status": AgentStatus.PENDING,
-            "input_data": {"trigger_type": "scheduled"},
-            "output_data": {},
-            "messages": [],
-            "current_step": "initialization",
-            "steps_completed": [],
-            "error_count": 0,
-            "confidence_score": 1.0,
-            "quality_checks_passed": True,
-        }
-        
+        from backend.app.database import async_session
+        from backend.app.services.pipeline_dispatch import (
+            discover_for_user,
+            list_agent_ready_users,
+        )
+
+        async def _run_async_task():
+            async with async_session() as db:
+                candidates = await list_agent_ready_users(db)
+                results = []
+                for candidate in candidates:
+                    try:
+                        results.append(await discover_for_user(candidate, db))
+                    except Exception as exc:  # one profile must not stop the rest
+                        logger.warning("Discovery failed for %s: %s", candidate.user_id, exc)
+                        results.append(
+                            {"user_id": str(candidate.user_id), "status": "failed", "error": str(exc)}
+                        )
+                return {
+                    "status": "completed",
+                    "candidates": len(candidates),
+                    "opportunities_found": sum(r.get("found", 0) for r in results),
+                    "opportunities_created": sum(r.get("created", 0) for r in results),
+                    "results": results,
+                }
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result_state = loop.run_until_complete(agent.process(state))
+        result = loop.run_until_complete(_run_async_task())
         loop.close()
-        
-        opportunities = result_state.get("output_data", {}).get("opportunities", [])
-        
-        return {
-            "status": "completed",
-            "opportunities_found": len(opportunities),
-            "results": opportunities[:10],  # Return top 10
-        }
-    
+        return result
+
     except Exception as e:
         logger.error(f"Job Scout error: {e}")
+        return {"status": "failed", "error": str(e)}
+
+
+@shared_task(name="backend.tasks.agent_tasks.run_career_pipeline_task")
+def run_career_pipeline_task(user_id: str, trigger: str = "scheduled"):
+    """Run the full ordered agent chain for one user."""
+    logger.info("Career pipeline: starting for user %s (%s)", user_id, trigger)
+    try:
+        from agents.supervisor.career_pipeline import CareerPipeline
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(CareerPipeline().run(user_id, trigger=trigger))
+        loop.close()
+        return result
+    except Exception as e:
+        logger.error(f"Career pipeline error for {user_id}: {e}")
+        return {"status": "failed", "user_id": user_id, "error": str(e)}
+
+
+@shared_task
+def fan_out_career_pipelines():
+    """Beat entry point: enqueue one pipeline per candidate who opted in.
+
+    Enumerating users here - rather than running one global workflow - is what
+    makes the scheduled run produce results tied to each person's own profile.
+    Users who switched continuous search off are skipped.
+    """
+    logger.info("Career pipeline fan-out: enumerating candidates")
+    try:
+        from backend.app.database import async_session
+        from backend.app.services.pipeline_dispatch import list_agent_ready_users
+
+        async def _eligible():
+            async with async_session() as db:
+                return await list_agent_ready_users(db, require_continuous=True)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        candidates = loop.run_until_complete(_eligible())
+        loop.close()
+
+        queued = []
+        for candidate in candidates:
+            try:
+                run_career_pipeline_task.delay(str(candidate.user_id), "scheduled")
+                queued.append(str(candidate.user_id))
+            except Exception as exc:  # broker trouble - report rather than crash the beat
+                logger.error("Could not enqueue pipeline for %s: %s", candidate.user_id, exc)
+
+        return {"status": "completed", "eligible": len(candidates), "queued": len(queued)}
+    except Exception as e:
+        logger.error(f"Career pipeline fan-out error: {e}")
         return {"status": "failed", "error": str(e)}
 
 

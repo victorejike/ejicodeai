@@ -3,36 +3,51 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.dependencies import get_db
+from backend.app.dependencies import get_db, resolve_user_id
 from backend.app.models.core import (
     Company,
     Contact,
     CVExtraction,
     Document,
     FollowUpSchedule,
+    GeneratedCV,
     Opportunity,
     OutreachHistory,
     Proposal,
     RejectionLog,
     User,
     UserProfile,
+    WorkflowExecution,
 )
 from backend.app.security import get_current_active_user
 from agents.extraction.cv_parser import parse_cv_document
+from agents.cv_builder.cv_builder_agent import CVBuilderAgent
 from agents.matching.matching_agent import MatchingAgent
 from agents.profile_analyzer.profile_analyzer_agent import ProfileAnalyzerAgent
 from agents.follow_up.follow_up_agent import FollowUpAgent
 from agents.rejection.rejection_recovery_agent import RejectionRecoveryAgent
 from agents.proposal_generation.proposal_generation_agent import ProposalGenerationAgent
 from agents.company_scout.company_scout_agent import CompanyScoutAgent
+from agents.contact_discovery.contact_discovery_agent import ContactDiscoveryAgent
+from agents.job_scout.job_scout_agent import JobScoutAgent
 from agents.scrapers.adapters import ScraperRegistry, scraper_registry
+from agents.supervisor.career_pipeline import PIPELINE_STAGES, STAGE_LABELS, CareerPipeline
+from agents.supervisor.workflow_engine import WorkflowEngine
 from agents.tools.registry import calculate_candidate_match
+from backend.app.services import cv_store
 from backend.app.services.event_bus import event_bus
+from backend.app.services.profile_gate import (
+    build_candidate_profile,
+    calculate_profile_completion,
+    describe_completion,
+    get_profile_completion,
+    require_complete_profile,
+)
 
 router = APIRouter()
 
@@ -64,6 +79,8 @@ class ProfileUpdateRequest(BaseModel):
     experience_years: Optional[float] = None
     experience: Optional[List[Dict[str, Any]]] = None
     education: Optional[List[Dict[str, Any]]] = None
+    certifications: Optional[List[Dict[str, Any]]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
     portfolio_url: Optional[str] = None
     github_url: Optional[str] = None
     linkedin_url: Optional[str] = None
@@ -94,53 +111,44 @@ class RejectionRequest(BaseModel):
     rejection_source: Optional[str] = "recipient_reply"
 
 
+class CVBuildRequest(BaseModel):
+    #: Tailor the CV to one stored opportunity. Omitted -> a general-purpose CV.
+    opportunity_id: Optional[str] = None
+    #: Let the configured AI provider phrase the summary. The wording is checked
+    #: against the profile before it is used, and a deterministic summary is used
+    #: when no provider is configured.
+    use_ai: bool = True
+
+
+class PipelineRunRequest(BaseModel):
+    trigger: Optional[str] = "manual"
+    #: Queue on Celery when a broker is reachable; otherwise run inline.
+    background: bool = True
+
+
+class ReindexRequest(BaseModel):
+    scope: Optional[str] = "all"  # all, individual, enterprise
+
+
+# ---------------------------------------------------------------------------
+# Individual Candidate Endpoints
+# ---------------------------------------------------------------------------
+
+
 # ------------------ Helper Functions ------------------
 
-def calculate_profile_completion(profile: Optional[UserProfile]) -> int:
-    """Calculate profile completion percentage from 0 to 100."""
-    if not profile:
-        return 10
-    score = 0
-    if profile.full_name:
-        score += 10
-    if profile.title:
-        score += 15
-    if profile.bio:
-        score += 10
-    if profile.skills and len(profile.skills) >= 3:
-        score += 20
-    elif profile.skills:
-        score += 10
-    if profile.experience_years and profile.experience_years > 0:
-        score += 10
-    if profile.experience:
-        score += 10
-    if profile.education:
-        score += 5
-    if profile.portfolio_url or profile.github_url or profile.linkedin_url:
-        score += 10
-    if profile.career_goals:
-        score += 10
-    if profile.location or profile.remote_preference:
-        score += 5
-    return min(score, 100)
+# `calculate_profile_completion`, `describe_completion` and `require_complete_profile`
+# all live in `backend.app.services.profile_gate` so the percentage on the
+# dashboard, the missing-fields checklist and the agent gate can never disagree.
 
 
 async def _get_user_id(current_user: User, db: AsyncSession) -> uuid.UUID:
-    """Resolve and return UUID for current user."""
-    if current_user.id:
-        try:
-            return uuid.UUID(str(current_user.id))
-        except ValueError:
-            pass
-    from backend.app.models.core import User as DBUser
-    stmt = select(DBUser.id).where(
-        (DBUser.username == current_user.username) | (DBUser.email == current_user.email)
-    )
-    db_id = (await db.execute(stmt)).scalars().first()
-    if db_id:
-        return db_id if isinstance(db_id, uuid.UUID) else uuid.UUID(str(db_id))
-    raise HTTPException(status_code=404, detail="User record not found")
+    """Resolve and return UUID for current user.
+
+    Delegates to the shared resolver so the events stream and every other
+    user-scoped surface agree on who the caller is.
+    """
+    return await resolve_user_id(current_user, db)
 
 
 # ------------------ Endpoints ------------------
@@ -171,7 +179,10 @@ async def get_individual_profile(
         await db.commit()
         await db.refresh(profile)
 
-    completion_pct = calculate_profile_completion(profile)
+    completion = describe_completion(
+        profile, fallback_name=current_user.full_name or current_user.username
+    )
+    completion_pct = completion["percent"]
 
     # Onboarding is only complete once there is a real knowledge base to work
     # from: either an uploaded/parsed CV, or a manually entered title + skills.
@@ -191,6 +202,8 @@ async def get_individual_profile(
             "experience_years": profile.experience_years,
             "experience": profile.experience or [],
             "education": profile.education or [],
+            "projects": profile.projects or [],
+            "certifications": profile.certifications or [],
             "portfolio_url": profile.portfolio_url,
             "github_url": profile.github_url,
             "linkedin_url": profile.linkedin_url,
@@ -209,6 +222,9 @@ async def get_individual_profile(
             "has_cv": has_cv,
             "onboarding_complete": onboarding_complete,
         },
+        # The exact checklist the dashboard renders, so the UI never has to
+        # reimplement (or guess at) what is still missing.
+        "profile_completion": completion,
     }
 
 
@@ -240,12 +256,15 @@ async def update_individual_profile(
     await db.commit()
     await db.refresh(profile)
 
-    completion_pct = calculate_profile_completion(profile)
+    completion = describe_completion(
+        profile, fallback_name=current_user.full_name or current_user.username
+    )
 
     return {
         "status": "success",
         "message": "Profile updated successfully",
-        "completion_percentage": completion_pct,
+        "completion_percentage": completion["percent"],
+        "profile_completion": completion,
     }
 
 
@@ -311,6 +330,7 @@ async def upload_and_parse_cv(
         extracted_skills=extraction_data["skills"],
         extracted_experience=extraction_data["experience"],
         extracted_education=extraction_data["education"],
+        extracted_certifications=extraction_data.get("certifications", []),
         extracted_projects=extraction_data["projects"],
         contact_info=extraction_data["contact_info"],
         raw_sections=extraction_data["raw_sections"],
@@ -334,14 +354,25 @@ async def upload_and_parse_cv(
 
     # Merge skills
     extracted_skill_names = extraction_data["skills_list"]
-    existing_skills = set(profile.skills or [])
-    existing_skills.update(extracted_skill_names)
-    profile.skills = list(existing_skills)
+    existing_skills = list(profile.skills or [])
+    for skill_name in extracted_skill_names:
+        if skill_name not in existing_skills:
+            existing_skills.append(skill_name)
+    profile.skills = existing_skills
+    profile.technologies = extracted_skill_names
 
-    if extraction_data.get("full_name") and not profile.full_name:
+    if extraction_data.get("full_name"):
         profile.full_name = extraction_data["full_name"]
+        user_record = await db.get(User, user_id)
+        if user_record:
+            user_record.full_name = extraction_data["full_name"]
+
     if extraction_data.get("title"):
         profile.title = extraction_data["title"]
+    if extraction_data.get("bio"):
+        profile.bio = extraction_data["bio"]
+    if extraction_data.get("career_goals"):
+        profile.career_goals = extraction_data["career_goals"]
     if extraction_data.get("experience_years"):
         profile.experience_years = max(profile.experience_years or 0.0, extraction_data["experience_years"])
     if extraction_data.get("experience"):
@@ -350,20 +381,29 @@ async def upload_and_parse_cv(
         profile.education = extraction_data["education"]
     if extraction_data.get("projects"):
         profile.projects = extraction_data["projects"]
+    if extraction_data.get("certifications"):
+        profile.certifications = extraction_data["certifications"]
 
     contact = extraction_data.get("contact_info", {})
-    if contact.get("github") and not profile.github_url:
+    if contact.get("github"):
         profile.github_url = contact["github"]
-    if contact.get("linkedin") and not profile.linkedin_url:
+    if contact.get("linkedin"):
         profile.linkedin_url = contact["linkedin"]
-    if contact.get("portfolio") and not profile.portfolio_url:
+    if contact.get("portfolio"):
         profile.portfolio_url = contact["portfolio"]
-    if contact.get("location") and not profile.location:
+    if contact.get("location"):
         profile.location = contact["location"]
+        if not profile.preferred_locations:
+            profile.preferred_locations = [contact["location"]]
 
     profile.cv_document_id = doc_record.id
+    profile.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(profile)
+
+    completion = describe_completion(
+        profile, fallback_name=profile.full_name or current_user.full_name or current_user.username
+    )
 
     # 6. Emit extraction success event
     await event_bus.publish(
@@ -379,16 +419,31 @@ async def upload_and_parse_cv(
         user_id=str(user_id),
     )
 
-    # 7. Live discovery matching
+    # 7. Live discovery matching, driven by what the CV actually says about this
+    #    person - their title first, then their strongest skills. No default query.
     discovered_count = 0
-    primary_query = extracted_skill_names[0] if extracted_skill_names else "Python"
+    candidate_payload = build_candidate_profile(
+        profile, fallback_name=profile.full_name or current_user.full_name or current_user.username
+    )
+    search_queries = JobScoutAgent.build_queries(candidate_payload, max_queries=4)
     try:
-        live_opportunities = await scraper_registry.search_opportunities(query=primary_query)
+        live_opportunities = (
+            await scraper_registry.search_opportunities(queries=search_queries)
+            if search_queries
+            else []
+        )
         for live_opp in live_opportunities[:15]:
             src_url = live_opp.get("source_url")
             if not src_url:
                 continue
-            existing_opp = (await db.execute(select(Opportunity).where(Opportunity.source_url == src_url))).scalars().first()
+            # This user's own copy of the posting - another user may hold theirs.
+            existing_opp = (
+                await db.execute(
+                    select(Opportunity).where(
+                        Opportunity.user_id == user_id, Opportunity.source_url == src_url
+                    )
+                )
+            ).scalars().first()
             if not existing_opp:
                 match_intel = calculate_candidate_match(
                     {"skills": profile.skills, "experience_years": profile.experience_years, "title": profile.title},
@@ -396,7 +451,7 @@ async def upload_and_parse_cv(
                 )
                 new_opp = Opportunity(
                     user_id=user_id,
-                    title=live_opp.get("title") or "Engineering Opportunity",
+                    title=live_opp.get("title") or "Untitled posting",
                     type=live_opp.get("type", "full-time"),
                     source_platform=live_opp.get("source", "web"),
                     source_url=src_url,
@@ -409,8 +464,8 @@ async def upload_and_parse_cv(
                     tech_required=live_opp.get("tech_required", []),
                     score=match_intel["score"],
                     score_breakdown=match_intel,
+                    source_reliability_score=ScraperRegistry.source_reliability(live_opp.get("source")),
                     freshness_status="OPEN",
-                    safety_status="SAFE",
                 )
                 db.add(new_opp)
                 discovered_count += 1
@@ -421,11 +476,16 @@ async def upload_and_parse_cv(
                 event_type="opportunities.matched",
                 message=f"Discovered and matched {discovered_count} live opportunities for your profile",
                 severity="success",
-                payload={"count": discovered_count, "primary_skill": primary_query},
+                payload={"count": discovered_count, "queries": search_queries},
                 user_id=str(user_id),
             )
-    except Exception as e:
-        pass
+    except Exception as exc:  # discovery is best-effort; the upload itself succeeded
+        await event_bus.publish(
+            event_type="opportunities.discovery_failed",
+            message=f"CV saved, but live discovery could not complete: {exc}",
+            severity="warning",
+            user_id=str(user_id),
+        )
 
     return {
         "status": "success",
@@ -435,14 +495,30 @@ async def upload_and_parse_cv(
         "extracted_skills": extracted_skill_names,
         "experience_years": extraction_data["experience_years"],
         "profile": {
+            "id": str(profile.id),
+            "user_id": str(profile.user_id),
             "full_name": profile.full_name,
             "title": profile.title,
-            "skills": profile.skills,
+            "bio": profile.bio,
+            "career_goals": profile.career_goals,
+            "skills": profile.skills or [],
+            "technologies": profile.technologies or [],
             "experience_years": profile.experience_years,
+            "experience": profile.experience or [],
+            "education": profile.education or [],
+            "projects": profile.projects or [],
+            "certifications": profile.certifications or [],
             "location": profile.location,
+            "preferred_locations": profile.preferred_locations or [],
+            "remote_preference": profile.remote_preference,
+            "portfolio_url": profile.portfolio_url,
             "github_url": profile.github_url,
             "linkedin_url": profile.linkedin_url,
+            "completion_percentage": completion["percent"],
+            "has_cv": True,
+            "onboarding_complete": True,
         },
+        "profile_completion": completion,
         "discovered_opportunities_count": discovered_count,
     }
 
@@ -462,8 +538,10 @@ async def parse_resume(
     analysis = await analyzer.execute(profile_data)
 
     extracted_skills = analysis.get("extracted_skills", [])
-    suggested_titles = analysis.get("suggested_titles", ["Senior Software Engineer"])
-    experience_years = analysis.get("experience_years", 3.0)
+    # No stand-in title or years: if the CV does not state them, we say so and let
+    # the user fill them in rather than putting words in their mouth.
+    suggested_titles = analysis.get("suggested_titles") or []
+    experience_years = analysis.get("experience_years")
 
     # Update profile with extracted data if available
     user_id = await _get_user_id(current_user, db)
@@ -471,24 +549,102 @@ async def parse_resume(
         select(UserProfile).where(UserProfile.user_id == user_id)
     )
     profile = result.scalars().first()
-    if profile:
-        if extracted_skills:
-            current_skills = set(profile.skills or [])
-            current_skills.update(extracted_skills)
-            profile.skills = list(current_skills)
-        if suggested_titles and not profile.title:
-            profile.title = suggested_titles[0]
-        if experience_years and profile.experience_years == 0:
-            profile.experience_years = experience_years
-        profile.ai_candidate_summary = analysis
-        await db.commit()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+        await db.flush()
+
+    # Also run high-fidelity CV extraction on pasted text
+    try:
+        cv_intel = parse_cv_document(payload.resume_text.encode("utf-8"), "pasted_resume.txt", "txt")
+        if cv_intel.get("full_name") and not profile.full_name:
+            profile.full_name = cv_intel["full_name"]
+            user_rec = await db.get(User, user_id)
+            if user_rec:
+                user_rec.full_name = cv_intel["full_name"]
+        if cv_intel.get("title") and not profile.title:
+            profile.title = cv_intel["title"]
+        if cv_intel.get("bio") and not profile.bio:
+            profile.bio = cv_intel["bio"]
+        if cv_intel.get("career_goals") and not profile.career_goals:
+            profile.career_goals = cv_intel["career_goals"]
+        if cv_intel.get("skills_list"):
+            curr_skills = list(profile.skills or [])
+            for s in cv_intel["skills_list"]:
+                if s not in curr_skills:
+                    curr_skills.append(s)
+            profile.skills = curr_skills
+            profile.technologies = cv_intel["skills_list"]
+        if cv_intel.get("experience_years"):
+            profile.experience_years = max(profile.experience_years or 0.0, cv_intel["experience_years"])
+        if cv_intel.get("experience") and not profile.experience:
+            profile.experience = cv_intel["experience"]
+        if cv_intel.get("education") and not profile.education:
+            profile.education = cv_intel["education"]
+        if cv_intel.get("certifications") and not profile.certifications:
+            profile.certifications = cv_intel["certifications"]
+        if cv_intel.get("projects") and not profile.projects:
+            profile.projects = cv_intel["projects"]
+        c_info = cv_intel.get("contact_info", {})
+        if c_info.get("github") and not profile.github_url:
+            profile.github_url = c_info["github"]
+        if c_info.get("linkedin") and not profile.linkedin_url:
+            profile.linkedin_url = c_info["linkedin"]
+        if c_info.get("portfolio") and not profile.portfolio_url:
+            profile.portfolio_url = c_info["portfolio"]
+        if c_info.get("location") and not profile.location:
+            profile.location = c_info["location"]
+            if not profile.preferred_locations:
+                profile.preferred_locations = [c_info["location"]]
+    except Exception as exc:
+        logger.warning("Secondary CV parser on pasted text bypassed: %s", exc)
+
+    if extracted_skills:
+        current_skills = list(profile.skills or [])
+        for s in extracted_skills:
+            if s not in current_skills:
+                current_skills.append(s)
+        profile.skills = current_skills
+    if suggested_titles and not profile.title:
+        profile.title = suggested_titles[0]
+    if experience_years and not profile.experience_years:
+        profile.experience_years = experience_years
+    profile.ai_candidate_summary = analysis
+    profile.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(profile)
+
+    completion = describe_completion(
+        profile, fallback_name=profile.full_name or current_user.full_name or current_user.username
+    )
 
     return {
         "status": "success",
         "analysis": analysis,
-        "extracted_skills": extracted_skills,
+        "extracted_skills": profile.skills or [],
         "suggested_titles": suggested_titles,
-        "experience_years": experience_years,
+        "experience_years": profile.experience_years,
+        "profile": {
+            "full_name": profile.full_name,
+            "title": profile.title,
+            "bio": profile.bio,
+            "career_goals": profile.career_goals,
+            "skills": profile.skills or [],
+            "experience_years": profile.experience_years,
+            "experience": profile.experience or [],
+            "education": profile.education or [],
+            "projects": profile.projects or [],
+            "certifications": profile.certifications or [],
+            "location": profile.location,
+            "github_url": profile.github_url,
+            "linkedin_url": profile.linkedin_url,
+            "portfolio_url": profile.portfolio_url,
+            "completion_percentage": completion["percent"],
+            "has_cv": bool(profile.cv_document_id),
+            "onboarding_complete": True,
+        },
+        "profile_completion": completion,
+        "missing_fields": analysis.get("missing_fields", []),
     }
 
 
@@ -497,78 +653,134 @@ async def search_and_match_opportunities(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Run search strategy and calculate 6-factor alignment scores against opportunities."""
-    # Get user profile
+    """Scrape live sources with the user's own search terms, then score every result.
+
+    Gated on a complete profile: discovery driven by half a profile returns the
+    same generic list for everybody, which is the opposite of a match.
+    """
     user_id = await _get_user_id(current_user, db)
-    result = await db.execute(
-        select(UserProfile).where(UserProfile.user_id == user_id)
-    )
-    profile = result.scalars().first()
+    fallback_name = current_user.full_name or current_user.username
+    profile = await require_complete_profile(user_id, db, fallback_name=fallback_name)
 
-    # Never fabricate a candidate identity to search against. If the user hasn't
-    # uploaded a CV or entered real skills yet, there is nothing truthful to match.
-    if not profile or not profile.skills:
-        return {
-            "status": "profile_incomplete",
-            "message": "Upload your CV or add your skills on your profile before running opportunity discovery.",
-            "opportunities_evaluated": 0,
-            "top_matches": [],
-        }
+    candidate_profile = build_candidate_profile(profile, fallback_name=fallback_name)
 
-    candidate_profile = {
-        "skills": profile.skills,
-        "experience_years": profile.experience_years or 0.0,
-        "location": profile.location or "Remote",
-        "remote_preference": profile.remote_preference or "remote",
-        "salary_min": profile.salary_min,
-        "salary_max": profile.salary_max,
-        "technologies": profile.technologies or [],
-        "career_goals": profile.career_goals,
+    # 1. Discover against the live sources using this candidate's terms.
+    scout = JobScoutAgent()
+    scout_state: Dict[str, Any] = {
+        "agent_name": scout.name,
+        "status": "pending",
+        "current_step": "init",
+        "input_data": {"candidate_profile": candidate_profile},
+        "output_data": {},
+        "steps_completed": [],
+        "error_count": 0,
+        "user_id": str(user_id),
     }
+    scout_result = await scout.process(scout_state)  # type: ignore[arg-type]
+    scout_out = scout_result.get("output_data", {})
+    live_opportunities: List[Dict[str, Any]] = scout_out.get("opportunities", [])
+    search_queries: List[str] = scout_out.get("search_queries", [])
 
+    # 2. Persist this user's own copy of anything new.
+    discovered_count = 0
+    for live_opp in live_opportunities:
+        src_url = live_opp.get("source_url")
+        if not src_url:
+            continue
+        exists = (
+            await db.execute(
+                select(Opportunity.id).where(
+                    Opportunity.user_id == user_id, Opportunity.source_url == src_url
+                )
+            )
+        ).scalars().first()
+        if exists:
+            continue
+        db.add(
+            Opportunity(
+                user_id=user_id,
+                title=live_opp.get("title") or "Untitled posting",
+                type=live_opp.get("type") or "full-time",
+                source_platform=live_opp.get("source") or "web",
+                source_url=src_url,
+                raw_description=live_opp.get("description"),
+                location=live_opp.get("location"),
+                location_type=live_opp.get("location_type") or "remote",
+                salary_min=live_opp.get("salary_min"),
+                salary_max=live_opp.get("salary_max"),
+                salary_currency=live_opp.get("salary_currency") or "USD",
+                tech_required=live_opp.get("tech_required") or [],
+                source_reliability_score=ScraperRegistry.source_reliability(live_opp.get("source")),
+                freshness_status="OPEN",
+            )
+        )
+        discovered_count += 1
+    if discovered_count:
+        await db.commit()
+
+    # 3. Score every opportunity this user owns against their profile.
     matching_agent = MatchingAgent()
+    opportunities = (
+        await db.execute(
+            select(Opportunity)
+            .where(Opportunity.user_id == user_id)
+            .order_by(desc(Opportunity.created_at))
+            .limit(100)
+        )
+    ).scalars().all()
 
-    # Get opportunities in database
-    opp_result = await db.execute(
-        select(Opportunity).order_by(Opportunity.created_at.desc()).limit(20)
-    )
-    opportunities = opp_result.scalars().all()
-
-    matched_count = 0
     matches_list = []
-
     for opp in opportunities:
-        opp_data = {
-            "title": opp.title,
-            "raw_description": opp.raw_description or "",
-            "location": opp.location or "Remote",
-            "location_type": opp.location_type or "remote",
-            "salary_min": opp.salary_min,
-            "salary_max": opp.salary_max,
-            "tech_required": opp.tech_required or [],
-        }
-        match_result = await matching_agent.execute({
-            "candidate_profile": candidate_profile,
-            "opportunity": opp_data,
-        })
-
-        total_score = match_result.get("total_score", 0)
-        opp.score = total_score
-        opp.score_breakdown = match_result.get("rubric_breakdown", {})
-        matched_count += 1
+        scored = matching_agent.score_opportunity(
+            {
+                "title": opp.title,
+                "description": opp.raw_description or "",
+                "location": opp.location,
+                "location_type": opp.location_type or "remote",
+                "salary_min": opp.salary_min,
+                "salary_max": opp.salary_max,
+                "tech_required": opp.tech_required or [],
+                "company_name": None,
+            },
+            candidate_profile,
+        )
+        opp.score = scored["match_score"]
+        opp.score_breakdown = scored["score_breakdown"]
         matches_list.append({
             "id": str(opp.id),
             "title": opp.title,
-            "score": total_score,
-            "breakdown": match_result.get("rubric_breakdown"),
-            "explanation": match_result.get("explanation"),
+            "source_platform": opp.source_platform,
+            "source_url": opp.source_url,
+            "score": scored["match_score"],
+            "breakdown": scored["score_breakdown"],
+            "explanation": scored["match_explanation"],
+            "matched_skills": scored["matched_skills"],
+            "missing_skills": scored["missing_skills"],
         })
 
     await db.commit()
 
+    await event_bus.publish(
+        event_type="search.completed",
+        message=(
+            f"Searched {len(scout_out.get('sources_used') or [])} sources for "
+            f"{len(search_queries)} role variants: {discovered_count} new, {len(matches_list)} scored"
+        ),
+        severity="success",
+        payload={
+            "queries": search_queries,
+            "discovered": discovered_count,
+            "scored": len(matches_list),
+        },
+        user_id=str(user_id),
+    )
+
     return {
         "status": "success",
-        "opportunities_evaluated": matched_count,
+        "search_queries": search_queries,
+        "sources_used": scout_out.get("sources_used", []),
+        "opportunities_discovered": discovered_count,
+        "opportunities_evaluated": len(matches_list),
         "top_matches": sorted(matches_list, key=lambda x: x["score"], reverse=True)[:10],
     }
 
@@ -582,9 +794,17 @@ async def get_matched_opportunities(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Retrieve ranked matched opportunities with 6-factor score breakdowns, Quality Scores, and Anti-Scam Verification."""
+    """This user's ranked opportunities with their real 6-factor breakdowns.
+
+    Trust and verification fields are returned as ``null`` when nothing has
+    actually verified the posting. The UI renders "-" / "Unverified" for those -
+    an unchecked job must never look checked.
+    """
+    user_id = await _get_user_id(current_user, db)
+
     query = select(Opportunity, Company.name.label("company_name"), Company.industry.label("company_industry"))\
         .outerjoin(Company, Opportunity.company_id == Company.id)\
+        .where(Opportunity.user_id == user_id)\
         .where(Opportunity.score >= min_score)
 
     if remote_only:
@@ -603,24 +823,24 @@ async def get_matched_opportunities(
             "id": str(opp.id),
             "title": opp.title,
             "company_id": str(opp.company_id) if opp.company_id else None,
-            "company_name": company_name or "Verified Employer",
-            "company_industry": company_industry or "Technology",
-            "source_platform": opp.source_platform or "Direct",
-            "source_url": opp.source_url or "#",
+            "company_name": company_name,
+            "company_industry": company_industry,
+            "source_platform": opp.source_platform,
+            "source_url": opp.source_url,
             "all_sources": opp.all_sources or [],
             "pipeline_type": opp.pipeline_type or "employment",
-            "location_type": opp.location_type or "remote",
-            "location": opp.location or "Global / Remote",
+            "location_type": opp.location_type,
+            "location": opp.location,
             "salary_min": opp.salary_min,
             "salary_max": opp.salary_max,
-            "salary_currency": opp.salary_currency or "USD",
-            "score": opp.score or 0,
+            "salary_currency": opp.salary_currency,
+            "score": opp.score,
             "score_breakdown": opp.score_breakdown or {},
-            "quality_score": opp.quality_score or opp.score or 88,
-            "source_reliability_score": opp.source_reliability_score or 90,
-            "safety_status": opp.safety_status or "SAFE",
-            "verification_confidence": opp.verification_confidence or 95,
-            "freshness_status": opp.freshness_status or "OPEN",
+            "quality_score": opp.quality_score,
+            "source_reliability_score": opp.source_reliability_score,
+            "safety_status": opp.safety_status,
+            "verification_confidence": opp.verification_confidence,
+            "freshness_status": opp.freshness_status,
             "status": opp.status,
             "posted_at": opp.posted_at.isoformat() if opp.posted_at else None,
         })
@@ -649,29 +869,101 @@ async def apply_to_opportunity(
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
+    # Outreach goes out in the user's name, so it must be backed by a real,
+    # finished profile.
+    _uid = await _get_user_id(current_user, db)
+    await require_complete_profile(
+        _uid, db, fallback_name=current_user.full_name or current_user.username
+    )
+
     user_id = await _get_user_id(current_user, db)
 
-    # Locate or create associated contact
+    # The employer, as actually recorded against the opportunity.
+    company = None
+    if opp.company_id:
+        company = (
+            await db.execute(select(Company).where(Company.id == opp.company_id))
+        ).scalars().first()
+    company_name = company.name if company and company.name else None
+    company_domain = company.domain if company and company.domain else None
+
+    # Locate an existing contact for this employer.
     contact = None
     if opp.company_id:
         contact_res = await db.execute(
-            select(Contact).where(Contact.company_id == opp.company_id).limit(1)
+            select(Contact)
+            .where(Contact.company_id == opp.company_id, Contact.email.isnot(None))
+            .limit(1)
         )
         contact = contact_res.scalars().first()
 
+    # No stored contact: try to discover a real one. We never invent a recipient -
+    # a fabricated "Hiring Manager <hiring@employer.com>" is an address that either
+    # bounces or reaches a stranger.
+    discovery_attempted = False
+    if not contact and company_domain:
+        discovery_attempted = True
+        discovery = ContactDiscoveryAgent()
+        discovery_state: Dict[str, Any] = {
+            "agent_name": discovery.name,
+            "status": "pending",
+            "current_step": "init",
+            "input_data": {
+                "company_id": str(opp.company_id) if opp.company_id else None,
+                "domain": company_domain,
+                "company_name": company_name,
+            },
+            "output_data": {},
+            "steps_completed": [],
+            "error_count": 0,
+            "user_id": str(user_id),
+        }
+        discovery_result = await discovery.process(discovery_state)  # type: ignore[arg-type]
+        found = [
+            c for c in discovery_result.get("output_data", {}).get("contacts", [])
+            if c.get("email")
+        ]
+        found.sort(key=lambda c: (c.get("confidence") == "verified", c.get("is_decision_maker")), reverse=True)
+        if found:
+            best = found[0]
+            name_parts = (best.get("name") or "").split(" ", 1)
+            contact = Contact(
+                company_id=opp.company_id,
+                user_id=user_id,
+                first_name=best.get("first_name") or (name_parts[0] or None),
+                last_name=best.get("last_name") or (name_parts[1] if len(name_parts) > 1 else None),
+                full_name=best.get("name"),
+                email=best["email"],
+                title=best.get("title"),
+                linkedin_url=best.get("linkedin_url"),
+                email_confidence=best.get("confidence") or "unverified",
+                is_decision_maker=bool(best.get("is_decision_maker")),
+                source=best.get("source"),
+            )
+            db.add(contact)
+            await db.commit()
+            await db.refresh(contact)
+
     if not contact:
-        contact = Contact(
-            company_id=opp.company_id,
-            first_name="Hiring",
-            last_name="Manager",
-            full_name="Hiring Manager",
-            email="hiring@employer.com",
-            title="Hiring Lead",
-            user_id=user_id,
-        )
-        db.add(contact)
-        await db.commit()
-        await db.refresh(contact)
+        reasons = []
+        if not opp.company_id:
+            reasons.append("this posting is not linked to a company record yet")
+        elif not company_domain:
+            reasons.append(f"we have no website for {company_name or 'this employer'}")
+        elif discovery_attempted:
+            reasons.append("contact discovery found no verifiable email address")
+        return {
+            "status": "no_contact_found",
+            "message": (
+                "No verified contact could be found, so nothing was sent. "
+                + ("Reason: " + "; ".join(reasons) + ". " if reasons else "")
+                + "Apply on the posting directly, or add a contact for this employer."
+            ),
+            "opportunity_id": str(opp.id),
+            "source_url": opp.source_url,
+            "outreach_id": None,
+            "follow_up_schedules": [],
+        }
 
     # Create OutreachHistory
     outreach = OutreachHistory(
@@ -692,7 +984,7 @@ async def apply_to_opportunity(
         "outreach_id": str(outreach.id),
         "contact_id": str(contact.id),
         "candidate_name": current_user.full_name or current_user.username,
-        "company_name": "Employer",
+        "company_name": company_name,
         "opportunity_title": opp.title,
     })
 
@@ -831,13 +1123,12 @@ async def get_individual_dashboard_stats(
 ) -> Dict[str, Any]:
     """Retrieve comprehensive KPI metrics for the individual career dashboard."""
     user_id = await _get_user_id(current_user, db)
+    fallback_name = current_user.full_name or current_user.username
 
-    # Profile completion
-    p_res = await db.execute(
-        select(UserProfile).where(UserProfile.user_id == user_id)
-    )
-    profile = p_res.scalars().first()
-    completion_pct = calculate_profile_completion(profile)
+    # Profile completion - same rules as the gate, so the dashboard's number and
+    # the agents' readiness check can never disagree.
+    profile, completion = await get_profile_completion(user_id, db, fallback_name=fallback_name)
+    completion_pct = completion["percent"]
 
     # Opportunities discovered for this user
     discovered_count = (
@@ -888,12 +1179,16 @@ async def get_individual_dashboard_stats(
     interviews_count = 0
     offers_count = 0
 
-    # Scheduled follow-ups
+    # Scheduled follow-ups belonging to this user's own outreach
     followups_count = (
         await db.scalar(
             select(func.count())
             .select_from(FollowUpSchedule)
-            .where(FollowUpSchedule.status == "scheduled")
+            .join(OutreachHistory, FollowUpSchedule.outreach_id == OutreachHistory.id)
+            .where(
+                FollowUpSchedule.status == "scheduled",
+                OutreachHistory.user_id == user_id,
+            )
         )
     ) or 0
 
@@ -921,13 +1216,18 @@ async def get_individual_dashboard_stats(
         "status": "success",
         "data": {
             "profile_completion_percentage": completion_pct,
+            # Full checklist so the dashboard can greet the user by name and show
+            # exactly what is still missing without a second request.
+            "profile_completion": completion,
+            "agent_ready": completion["agent_ready"],
             "active_matches": matches_count,
             "applications_sent": outreach_count,
             "scheduled_follow_ups": followups_count,
             "rejections_recovered": rejections_count,
             "average_match_score": average_match_score,
             "candidate_title": profile.title if profile and profile.title else None,
-            "candidate_name": (profile.full_name if profile and profile.full_name else None) or current_user.full_name or current_user.username,
+            "candidate_name": completion["display_name"],
+            "candidate_first_name": completion["first_name"],
             "hiring_pipeline": {
                 "discovered": discovered_count,
                 "matched": matches_count,
@@ -1026,13 +1326,16 @@ async def get_companies_to_approach(
             "companies": [],
         }
 
-    candidate_skills = profile.skills
+    candidate_profile = build_candidate_profile(
+        profile, fallback_name=current_user.full_name or current_user.username
+    )
 
     company_scout = CompanyScoutAgent()
     state = {
         "status": "running",
-        "input_data": {"skills": candidate_skills},
+        "input_data": {"candidate_profile": candidate_profile, "skills": profile.skills},
         "steps_completed": [],
+        "user_id": str(user_id),
     }
     result_state = await company_scout.process(state)
     out = result_state.get("output_data", {})
@@ -1061,15 +1364,17 @@ async def get_search_configuration(
         "config": {
             "search_frequency": profile.search_frequency if profile else "daily",
             "continuous_search_active": profile.continuous_search_active if profile else True,
-            "job_types": profile.job_types if profile and profile.job_types else ["full-time", "contract"],
-            "locations": profile.preferred_locations if profile and profile.preferred_locations else ["Remote"],
+            # Preferences the user has not set stay empty so the UI prompts for
+            # them rather than pretending a choice was made.
+            "job_types": (profile.job_types if profile else None) or [],
+            "locations": (profile.preferred_locations if profile else None) or [],
             "salary_min": profile.salary_min if profile else None,
             "salary_max": profile.salary_max if profile else None,
-            "salary_currency": profile.salary_currency if profile else "USD",
-            "industries": profile.preferred_industries if profile and profile.preferred_industries else [],
-            "skills": profile.skills if profile and profile.skills else [],
-            "companies": profile.preferred_companies if profile else [],
-            "remote_preference": profile.remote_preference if profile else "remote",
+            "salary_currency": (profile.salary_currency if profile else None),
+            "industries": (profile.preferred_industries if profile else None) or [],
+            "skills": (profile.skills if profile else None) or [],
+            "companies": (profile.preferred_companies if profile else None) or [],
+            "remote_preference": profile.remote_preference if profile else None,
         },
     }
 
@@ -1114,3 +1419,391 @@ async def update_search_configuration(
         "status": "success",
         "message": "Continuous search configuration updated successfully",
     }
+
+
+# ------------------ ATS CV builder ------------------
+
+def _opportunity_payload(opp: Opportunity, company_name: Optional[str] = None) -> Dict[str, Any]:
+    """A stored opportunity in the shape the agents pass between stages."""
+    return {
+        "id": str(opp.id),
+        "title": opp.title,
+        "company_name": company_name,
+        "description": opp.raw_description or "",
+        "tech_required": opp.tech_required or [],
+        "location": opp.location,
+        "location_type": opp.location_type,
+        "salary_min": opp.salary_min,
+        "salary_max": opp.salary_max,
+        "source": opp.source_platform,
+        "source_url": opp.source_url,
+        "match_score": opp.score,
+    }
+
+
+async def _load_owned_opportunity(
+    opportunity_id: str, user_id: uuid.UUID, db: AsyncSession
+) -> tuple[Opportunity, Optional[str]]:
+    """Fetch one opportunity this user may act on, plus the employer's name."""
+    try:
+        opp_uuid = uuid.UUID(opportunity_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid opportunity ID format")
+
+    opp = (
+        await db.execute(select(Opportunity).where(Opportunity.id == opp_uuid))
+    ).scalars().first()
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    if opp.user_id is not None and opp.user_id != user_id:
+        # Another candidate's scored copy of a posting is not this user's to read.
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    company_name = None
+    if opp.company_id:
+        company = (
+            await db.execute(select(Company).where(Company.id == opp.company_id))
+        ).scalars().first()
+        company_name = company.name if company else None
+    return opp, company_name
+
+
+async def _load_owned_cv(cv_id: str, user_id: uuid.UUID, db: AsyncSession) -> GeneratedCV:
+    try:
+        cv_uuid = uuid.UUID(cv_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid CV ID format")
+    row = (
+        await db.execute(
+            select(GeneratedCV).where(GeneratedCV.id == cv_uuid, GeneratedCV.user_id == user_id)
+        )
+    ).scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return row
+
+
+@router.post("/cv/build")
+async def build_ats_cv(
+    payload: CVBuildRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Build an ATS-safe CV from this user's profile, optionally tailored to a job.
+
+    Gated on a complete profile: a CV assembled from half a profile is the one
+    that gets filtered out, and no generator can invent the experience an ATS is
+    looking for.
+    """
+    user_id = await _get_user_id(current_user, db)
+    fallback_name = current_user.full_name or current_user.username
+    profile = await require_complete_profile(user_id, db, fallback_name=fallback_name)
+    candidate_profile = build_candidate_profile(
+        profile, fallback_name=fallback_name, email=current_user.email
+    )
+
+    opportunity_payload: Optional[Dict[str, Any]] = None
+    if payload.opportunity_id:
+        opp, company_name = await _load_owned_opportunity(payload.opportunity_id, user_id, db)
+        opportunity_payload = _opportunity_payload(opp, company_name)
+
+    agent = CVBuilderAgent()
+    built = await agent.build(candidate_profile, opportunity_payload, use_ai=payload.use_ai)
+    saved = await cv_store.save_generated_cvs(user_id, [built], db)
+    row = saved["rows"][0] if saved["rows"] else None
+
+    await event_bus.publish(
+        event_type="cv.built",
+        message=(
+            f"ATS CV built for {built.get('target_title') or 'your profile'}"
+            f" - score {built.get('ats_score')}/100"
+        ),
+        severity="success",
+        payload={
+            "cv_id": built.get("cv_id"),
+            "ats_score": built.get("ats_score"),
+            "keywords_matched": len(built.get("keywords_matched") or []),
+            "keywords_missing": len(built.get("keywords_missing") or []),
+            "generator": "ai" if built.get("summary_source") == "ai" else "template",
+        },
+        user_id=str(user_id),
+    )
+
+    return {
+        "status": "success",
+        "cv": cv_store.cv_detail(row) if row is not None else None,
+        # The honest list of what the posting asked for and the profile does not
+        # claim - shown to the user, never written into the CV.
+        "keywords_missing": built.get("keywords_missing") or [],
+        "recommendations": built.get("recommendations") or [],
+        "format_warnings": built.get("issues") or [],
+        "summary_source": built.get("summary_source"),
+    }
+
+
+@router.get("/cv/versions")
+async def list_generated_cvs(
+    limit: int = Query(25, ge=1, le=100),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Every CV built for this user, newest first."""
+    user_id = await _get_user_id(current_user, db)
+    rows = (
+        await db.execute(
+            select(GeneratedCV)
+            .where(GeneratedCV.user_id == user_id)
+            .order_by(desc(GeneratedCV.created_at))
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    scores = [row.ats_score for row in rows if row.ats_score is not None]
+    return {
+        "status": "success",
+        "count": len(rows),
+        "best_ats_score": max(scores) if scores else None,
+        "formats": list(cv_store.DOWNLOAD_FORMATS),
+        "versions": [cv_store.cv_summary(row) for row in rows],
+    }
+
+
+@router.get("/cv/{cv_id}")
+async def get_generated_cv(
+    cv_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """One stored CV, including the exact text an ATS would parse."""
+    user_id = await _get_user_id(current_user, db)
+    row = await _load_owned_cv(cv_id, user_id, db)
+    return {"status": "success", "cv": cv_store.cv_detail(row)}
+
+
+@router.get("/cv/{cv_id}/download")
+async def download_generated_cv(
+    cv_id: str,
+    format: str = Query("pdf", pattern="^(pdf|docx|txt)$"),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Download a stored CV. Every format is rendered from the same plain text."""
+    user_id = await _get_user_id(current_user, db)
+    row = await _load_owned_cv(cv_id, user_id, db)
+    try:
+        body, media_type, filename = cv_store.render(row, format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/cv/{cv_id}/ats-check")
+async def check_cv_ats_score(
+    cv_id: str,
+    opportunity_id: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Re-score a stored CV, optionally against a different target job.
+
+    Re-scoring reads the stored text, so what is measured is exactly what an
+    employer's parser would receive.
+    """
+    user_id = await _get_user_id(current_user, db)
+    row = await _load_owned_cv(cv_id, user_id, db)
+
+    profile, _ = await get_profile_completion(
+        user_id, db, fallback_name=current_user.full_name or current_user.username
+    )
+    candidate_profile = (
+        build_candidate_profile(
+            profile,
+            fallback_name=current_user.full_name or current_user.username,
+            email=current_user.email,
+        )
+        if profile
+        else {}
+    )
+
+    target_id = opportunity_id or (str(row.opportunity_id) if row.opportunity_id else None)
+    opportunity_payload: Optional[Dict[str, Any]] = None
+    if target_id:
+        opp, company_name = await _load_owned_opportunity(target_id, user_id, db)
+        opportunity_payload = _opportunity_payload(opp, company_name)
+
+    agent = CVBuilderAgent()
+    required = agent.extract_requirement_keywords(opportunity_payload)
+    matched, missing = agent.align_keywords(candidate_profile.get("skills") or [], required)
+    format_points, format_issues = agent.check_format_safety(row.content_text or "")
+    report = agent.score_ats(
+        row.content_text or "",
+        required_keywords=required,
+        matched_keywords=matched,
+        sections=row.sections or {},
+        profile=candidate_profile,
+    )
+
+    row.ats_score = report["ats_score"]
+    row.ats_breakdown = {
+        "components": report["breakdown"],
+        "maximums": report["breakdown_maximums"],
+        "measured_out_of": report["measured_out_of"],
+        "word_count": report["word_count"],
+        "recommendations": report["recommendations"],
+        "keywords_required": required,
+        "rechecked_against_opportunity_id": target_id,
+    }
+    row.keywords_matched = matched
+    row.keywords_missing = missing
+    row.format_warnings = report["issues"]
+    await db.commit()
+
+    return {
+        "status": "success",
+        "cv_id": str(row.id),
+        "ats_score": report["ats_score"],
+        "breakdown": report["breakdown"],
+        "breakdown_maximums": report["breakdown_maximums"],
+        "format_safety_points": format_points,
+        "format_issues": format_issues,
+        "issues": report["issues"],
+        "recommendations": report["recommendations"],
+        "keywords_required": required,
+        "keywords_matched": matched,
+        "keywords_missing": missing,
+        "checked_against": opportunity_payload["title"] if opportunity_payload else None,
+    }
+
+
+# ------------------ Agent pipeline ------------------
+
+@router.post("/pipeline/run")
+async def run_career_pipeline(
+    payload: PipelineRunRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Run the full agent chain for this user: search -> score -> CV -> outreach draft.
+
+    Gated on a complete profile (428 with the missing fields when it is not).
+    Queued on Celery when a broker is reachable; otherwise it runs inline so the
+    feature works on a single-process install.
+    """
+    user_id = await _get_user_id(current_user, db)
+    fallback_name = current_user.full_name or current_user.username
+    await require_complete_profile(user_id, db, fallback_name=fallback_name)
+
+    trigger = payload.trigger or "manual"
+    stages = [
+        {"stage": stage, "index": index, "label": STAGE_LABELS.get(stage, stage)}
+        for index, stage in enumerate(PIPELINE_STAGES)
+    ]
+
+    if payload.background:
+        try:
+            from backend.tasks.agent_tasks import run_career_pipeline_task
+
+            queued = run_career_pipeline_task.delay(str(user_id), trigger)
+            return {
+                "status": "queued",
+                "task_id": str(queued.id),
+                "execution_id": None,
+                "stages": stages,
+                "message": "Agents are running. Watch the live feed for stage-by-stage progress.",
+            }
+        except Exception as exc:  # no broker configured or unreachable
+            # Falling back to inline execution is better than telling a user with
+            # a complete profile that nothing can run.
+            await event_bus.publish(
+                event_type="pipeline.queue_unavailable",
+                message="Task queue unavailable; running the agents inline instead.",
+                severity="warning",
+                payload={"error": str(exc)},
+                user_id=str(user_id),
+            )
+
+    result = await CareerPipeline().run(user_id, trigger=trigger, session=db)
+    return {**result, "stages_declared": stages}
+
+
+@router.get("/pipeline")
+async def list_pipeline_runs(
+    limit: int = Query(10, ge=1, le=50),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """This user's recent pipeline runs, newest first."""
+    user_id = await _get_user_id(current_user, db)
+    rows = (
+        await db.execute(
+            select(WorkflowExecution)
+            .where(WorkflowExecution.user_id == user_id)
+            .order_by(desc(WorkflowExecution.started_at))
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "status": "success",
+        "stages": [
+            {"stage": stage, "index": index, "label": STAGE_LABELS.get(stage, stage)}
+            for index, stage in enumerate(PIPELINE_STAGES)
+        ],
+        "runs": [
+            {
+                "id": str(row.id),
+                "workflow_type": row.workflow_type,
+                "status": row.status,
+                "current_step": row.current_step,
+                "error_message": row.error_message,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/pipeline/{execution_id}")
+async def get_pipeline_run(
+    execution_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Stage-by-stage status of one run, for the progress view."""
+    user_id = await _get_user_id(current_user, db)
+    try:
+        exec_uuid = uuid.UUID(execution_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid execution ID format")
+
+    execution = (
+        await db.execute(
+            select(WorkflowExecution).where(WorkflowExecution.id == exec_uuid)
+        )
+    ).scalars().first()
+    if not execution or (execution.user_id is not None and execution.user_id != user_id):
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    status_payload = await WorkflowEngine.get_workflow_status(execution_id)
+    if not status_payload:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    for step in status_payload.get("steps", []):
+        step["label"] = STAGE_LABELS.get(step["agent_name"], step["agent_name"])
+
+    completed = sum(1 for s in status_payload["steps"] if s["status"] == "completed")
+    total = len(status_payload["steps"]) or 1
+    return {
+        "status": "success",
+        "run": status_payload,
+        "progress_percent": round(100 * completed / total),
+        "stages_completed": completed,
+        "stage_total": total,
+    }
+

@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Every surface in the app is described here once, as variables, and the
+ * `.apple-*` utilities below read those variables. That is what makes the theme
+ * toggle in the top bar mean something: `html.light` only has to restate the
+ * values, not restate the utilities.
+ */
 :root {
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   --bg: #08080a;
@@ -20,91 +26,164 @@
   --red: #ef4444;
   --blue: #3b82f6;
   --purple: #a855f7;
+
+  /* Glass + control surfaces (dark) */
+  --glass-bg: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  --glass-subtle-bg: rgba(255, 255, 255, 0.02);
+  --glass-subtle-border: rgba(255, 255, 255, 0.07);
+  --glass-hover-bg: rgba(255, 255, 255, 0.06);
+  --pill-bg: rgba(255, 255, 255, 0.05);
+  --pill-border: rgba(255, 255, 255, 0.12);
+  --pill-inset: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  --btn-primary-bg: #ffffff;
+  --btn-primary-bg-hover: #f4f4f5;
+  --btn-primary-fg: #000000;
+  --btn-primary-shadow: 0 4px 20px rgba(255, 255, 255, 0.25);
+  --btn-primary-shadow-hover: 0 8px 30px rgba(255, 255, 255, 0.35);
+  --btn-secondary-bg: rgba(255, 255, 255, 0.06);
+  --btn-secondary-bg-hover: rgba(255, 255, 255, 0.12);
+  --btn-secondary-fg: #ffffff;
+  --btn-secondary-border: rgba(255, 255, 255, 0.15);
+  --btn-secondary-border-hover: rgba(255, 255, 255, 0.25);
+  --track: rgba(255, 255, 255, 0.08);
+  --scroll-thumb: rgba(255, 255, 255, 0.15);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.3);
+  --gradient-text: linear-gradient(180deg, #ffffff 0%, #a1a1aa 100%);
+  --gradient-text-glow: linear-gradient(180deg, #ffffff 30%, #fca5a5 80%, #ef4444 100%);
 }
 
 html.light {
-  --bg: #08080a;
-  --sidebar: #0c0c10;
-  --surface: #111117;
-  --card: #15151e;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-red: rgba(239, 68, 68, 0.25);
-  --text: #f3f4f6;
-  --text-muted: #9ca3af;
-  --accent: #ef4444;
-  --accent-hover: #dc2626;
-  --accent-light: rgba(239, 68, 68, 0.15);
-  --green: #22c55e;
-  --yellow: #eab308;
-  --red: #ef4444;
-  --blue: #3b82f6;
-  --purple: #a855f7;
+  --bg: #f6f6f8;
+  --sidebar: #ffffff;
+  --surface: #ffffff;
+  --card: #ffffff;
+  --border: rgba(9, 9, 11, 0.1);
+  --border-red: rgba(220, 38, 38, 0.28);
+  --text: #18181b;
+  --text-muted: #52525b;
+  --accent: #dc2626;
+  --accent-hover: #b91c1c;
+  --accent-light: rgba(220, 38, 38, 0.1);
+  --green: #16a34a;
+  --yellow: #ca8a04;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --purple: #9333ea;
+
+  /* Glass + control surfaces (light) */
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(9, 9, 11, 0.08);
+  --glass-shadow: 0 20px 50px rgba(9, 9, 11, 0.08);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --glass-subtle-bg: rgba(255, 255, 255, 0.55);
+  --glass-subtle-border: rgba(9, 9, 11, 0.06);
+  --glass-hover-bg: rgba(9, 9, 11, 0.04);
+  --pill-bg: rgba(255, 255, 255, 0.8);
+  --pill-border: rgba(9, 9, 11, 0.1);
+  --pill-inset: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --btn-primary-bg: #18181b;
+  --btn-primary-bg-hover: #27272a;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-shadow: 0 4px 20px rgba(9, 9, 11, 0.18);
+  --btn-primary-shadow-hover: 0 8px 30px rgba(9, 9, 11, 0.26);
+  --btn-secondary-bg: rgba(9, 9, 11, 0.04);
+  --btn-secondary-bg-hover: rgba(9, 9, 11, 0.08);
+  --btn-secondary-fg: #18181b;
+  --btn-secondary-border: rgba(9, 9, 11, 0.12);
+  --btn-secondary-border-hover: rgba(9, 9, 11, 0.2);
+  --track: rgba(9, 9, 11, 0.08);
+  --scroll-thumb: rgba(9, 9, 11, 0.18);
+  --scroll-thumb-hover: rgba(9, 9, 11, 0.32);
+  --gradient-text: linear-gradient(180deg, #18181b 0%, #52525b 100%);
+  --gradient-text-glow: linear-gradient(180deg, #18181b 30%, #b91c1c 80%, #dc2626 100%);
 }
 
 html, body {
   margin: 0;
   min-height: 100%;
   background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
-  background-color: #08080a;
 }
 
 * { box-sizing: border-box; }
 
 /* Apple Design System & Translucent Glass Utilities */
 .apple-glass {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--glass-bg);
   backdrop-filter: blur(40px) saturate(180%);
   -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), var(--glass-inset);
 }
 
 .apple-glass-subtle {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--glass-subtle-bg);
   backdrop-filter: blur(30px) saturate(160%);
   -webkit-backdrop-filter: blur(30px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--glass-subtle-border);
 }
 
 .apple-glass-pill {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--pill-bg);
   backdrop-filter: blur(25px);
   -webkit-backdrop-filter: blur(25px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--pill-border);
   border-radius: 9999px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: var(--pill-inset);
 }
 
 .apple-button-primary {
-  background: #ffffff;
-  color: #000000;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
   font-weight: 600;
   border-radius: 9999px;
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 4px 20px rgba(255, 255, 255, 0.25);
+  box-shadow: var(--btn-primary-shadow);
 }
 
 .apple-button-primary:hover {
   transform: scale(1.02);
-  background: #f4f4f5;
-  box-shadow: 0 8px 30px rgba(255, 255, 255, 0.35);
+  background: var(--btn-primary-bg-hover);
+  box-shadow: var(--btn-primary-shadow-hover);
 }
 
 .apple-button-secondary {
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-fg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--btn-secondary-border);
   border-radius: 9999px;
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .apple-button-secondary:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: var(--btn-secondary-bg-hover);
+  border-color: var(--btn-secondary-border-hover);
   transform: scale(1.02);
+}
+
+/* A disabled control must look unavailable and must not animate on hover -
+   the profile gate leans on this rather than hiding the button. */
+.apple-button-primary:disabled,
+.apple-button-secondary:disabled,
+.apple-button-primary[aria-disabled='true'],
+.apple-button-secondary[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.apple-button-primary:disabled:hover,
+.apple-button-secondary:disabled:hover,
+.apple-button-primary[aria-disabled='true']:hover,
+.apple-button-secondary[aria-disabled='true']:hover {
+  transform: none;
 }
 
 /* Animations */
@@ -148,6 +227,16 @@ html, body {
   }
 }
 
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
 .animate-aurora {
   animation: aurora-glow 14s ease-in-out infinite;
 }
@@ -164,21 +253,49 @@ html, body {
   animation: radar-sweep 5s linear infinite;
 }
 
+.animate-pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+/* Skeleton placeholder used while real data is loading. Deliberately content
+   free - a loading state must never show a plausible-looking fake number. */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--track) 0%,
+    var(--glass-hover-bg) 50%,
+    var(--track) 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
 .text-gradient-apple {
-  background: linear-gradient(180deg, #ffffff 0%, #a1a1aa 100%);
+  background: var(--gradient-text);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
 .text-gradient-apple-glow {
-  background: linear-gradient(180deg, #ffffff 30%, #fca5a5 80%, #ef4444 100%);
+  background: var(--gradient-text-glow);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
-
+@media (prefers-reduced-motion: reduce) {
+  .animate-aurora,
+  .animate-aurora-red,
+  .animate-float,
+  .animate-radar,
+  .animate-pulse-soft,
+  .skeleton-shimmer {
+    animation: none;
+  }
+}

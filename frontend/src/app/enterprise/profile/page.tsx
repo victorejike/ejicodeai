@@ -78,10 +78,20 @@ export default function EnterpriseProfilePage() {
 
   const authHeaders = (t: string): Record<string, string> => ({ Authorization: `Bearer ${t}` });
 
+  const apiFetch = async (path: string, options?: RequestInit) => {
+    try {
+      const res = await fetch(`/api/enterprise${path}`, options);
+      if (res.ok) return res;
+    } catch {
+      // fallback
+    }
+    return fetch(`http://localhost:8000/v1/enterprise${path}`, options);
+  };
+
   const fetchAll = async (authToken: string) => {
     setLoading(true);
     try {
-      const orgRes = await fetch(`${API_URL}/v1/enterprise/organization`, {
+      const orgRes = await apiFetch('/organization', {
         headers: authHeaders(authToken),
       });
       if (orgRes.ok) {
@@ -98,7 +108,7 @@ export default function EnterpriseProfilePage() {
         }
       }
 
-      const reqRes = await fetch(`${API_URL}/v1/enterprise/requirements`, {
+      const reqRes = await apiFetch('/requirements', {
         headers: authHeaders(authToken),
       });
       if (reqRes.ok) {
@@ -124,7 +134,7 @@ export default function EnterpriseProfilePage() {
     setOrgError(null);
 
     try {
-      const res = await fetch(`${API_URL}/v1/enterprise/organization`, {
+      const res = await apiFetch('/organization', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
         body: JSON.stringify({
@@ -169,7 +179,7 @@ export default function EnterpriseProfilePage() {
       if (reqBudgetMin !== '') payload.budget_min = Number(reqBudgetMin);
       if (reqBudgetMax !== '') payload.budget_max = Number(reqBudgetMax);
 
-      const res = await fetch(`${API_URL}/v1/enterprise/requirements`, {
+      const res = await apiFetch('/requirements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
         body: JSON.stringify(payload),

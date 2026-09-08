@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -36,10 +36,28 @@ import {
   UploadCloud,
   FileUp,
 } from 'lucide-react';
-import AgentEventFeed from '@/components/AgentEventFeed';
+import AgentEventFeed, { AgentEvent } from '@/components/AgentEventFeed';
+import { PipelineStage } from '@/components/PipelineProgress';
+import ProfileGate from '@/components/ProfileGate';
+import { Button } from '@/components/ui';
+import { useSession } from '@/lib/useSession';
 
 export default function IndividualDashboard() {
   const router = useRouter();
+  // Identity and the profile gate come from one shared hook, so the greeting,
+  // the checklist and the disabled "run" button can never disagree.
+  const {
+    completion,
+    firstName,
+    displayName,
+    agentReady,
+    gateReason,
+    loading: sessionLoading,
+    refresh: refreshSession,
+  } = useSession();
+  const [pipelineStages, setPipelineStages] = useState<PipelineStage[]>([]);
+  const [gateMessage, setGateMessage] = useState<string | null>(null);
+  const lastCompletedRunRef = useRef<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'matches' | 'companies' | 'marketing' | 'rejection' | 'search_config' | 'profile'>('matches');
   const [pipelineType, setPipelineType] = useState<'employment' | 'freelance'>('employment');
@@ -79,23 +97,38 @@ export default function IndividualDashboard() {
   // Profile data
   const [profile, setProfile] = useState<any>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editFullName, setEditFullName] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editSkills, setEditSkills] = useState('');
+  const [editLocation, setEditLocation] = useState('');
   const [editSalaryMin, setEditSalaryMin] = useState<number | ''>('');
   const [editSalaryMax, setEditSalaryMax] = useState<number | ''>('');
   const [editGoals, setEditGoals] = useState('');
 
   // Continuous Search Config
-  const [searchConfig, setSearchConfig] = useState({
+  // Seeded from this user's saved config and profile. The salary band, job types
+  // and industries start empty on purpose: pre-filling someone else's numbers is
+  // how a search ends up matching a career that isn't theirs.
+  const [searchConfig, setSearchConfig] = useState<{
+    search_frequency: string;
+    continuous_search_active: boolean;
+    job_types: string[];
+    locations: string[];
+    salary_min: number | '';
+    salary_max: number | '';
+    salary_currency: string;
+    industries: string[];
+    remote_preference: string;
+  }>({
     search_frequency: 'daily',
     continuous_search_active: true,
-    job_types: ['full-time', 'contract'],
-    locations: ['Remote'],
-    salary_min: 120000,
-    salary_max: 180000,
+    job_types: [],
+    locations: [],
+    salary_min: '',
+    salary_max: '',
     salary_currency: 'USD',
-    industries: ['AI / SaaS', 'Fintech', 'Developer Tools'],
+    industries: [],
     remote_preference: 'remote',
   });
   const [isUpdatingConfig, setIsUpdatingConfig] = useState(false);
@@ -179,9 +212,11 @@ export default function IndividualDashboard() {
           // Never prefill edit fields with fabricated placeholders - a user who
           // saves without touching these fields must not overwrite real (or
           // intentionally empty) data with an invented title/skills/salary.
+          setEditFullName(d.profile.full_name || '');
           setEditTitle(d.profile.title || '');
           setEditBio(d.profile.bio || '');
           setEditSkills((d.profile.skills || []).join(', '));
+          setEditLocation(d.profile.location || '');
           setEditSalaryMin(d.profile.salary_min ?? '');
           setEditSalaryMax(d.profile.salary_max ?? '');
           setEditGoals(d.profile.career_goals || '');
@@ -250,7 +285,9 @@ export default function IndividualDashboard() {
       });
       if (res.ok) {
         const d = await res.json();
-        if (d.config) setSearchConfig(d.config);
+        // Merge, so a config the backend has not filled in yet keeps the empty
+        // shape instead of turning fields into `undefined`.
+        if (d.config) setSearchConfig((prev) => ({ ...prev, ...d.config }));
       }
     } catch (err) {
       console.error('Error fetching search config:', err);
@@ -263,23 +300,104 @@ export default function IndividualDashboard() {
     }
   }, [token, pipelineType]);
 
+  // Anything the saved search config leaves blank falls back to what the user
+  // actually put in their profile - not to a made-up band.
+  useEffect(() => {
+    if (!profile) return;
+    setSearchConfig((prev) => ({
+      ...prev,
+      salary_min: prev.salary_min === '' ? profile.salary_min ?? '' : prev.salary_min,
+      salary_max: prev.salary_max === '' ? profile.salary_max ?? '' : prev.salary_max,
+      salary_currency: prev.salary_currency || profile.salary_currency || 'USD',
+      job_types: prev.job_types.length ? prev.job_types : profile.job_types ?? [],
+      locations: prev.locations.length ? prev.locations : profile.preferred_locations ?? [],
+      remote_preference: prev.remote_preference || profile.remote_preference || 'remote',
+    }));
+  }, [profile]);
+
+  // The declared stage list, so the hand-off strip is visible (greyed out)
+  // before the first run rather than appearing out of nowhere mid-chain.
+  useEffect(() => {
+    if (!token) return;
+    (async () => {
+      try {
+        const res = await apiFetch('/pipeline?limit=1', { headers: authHeaders });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (Array.isArray(d.stages) && d.stages.length) setPipelineStages(d.stages);
+      } catch {
+        // Not fatal: the strip fills in from the run's own events.
+      }
+    })();
+  }, [token]);
+
+  /**
+   * Runs the real agent chain, not just a re-read of stored rows:
+   * profile analysis -> discovery -> extraction -> validation -> dedup ->
+   * matching -> CV -> contact -> proposal. Each stage's output is the next
+   * stage's input, and every step reports on the live feed below.
+   */
   const handleTriggerSearch = async () => {
     setIsMatching(true);
     setApplyMessage(null);
+    setGateMessage(null);
     try {
-      const res = await apiFetch('/search', {
+      const res = await apiFetch('/pipeline/run', {
         method: 'POST',
-        headers: authHeaders,
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ trigger: 'manual', background: true }),
       });
-      if (res.ok) {
+      const body = await res.json().catch(() => null);
+
+      if (res.status === 428) {
+        setGateMessage(
+          body?.detail?.message ||
+            'Finish your profile before the agents can run - they search using your data.'
+        );
+        refreshSession();
+        return;
+      }
+      if (!res.ok) {
+        setApplyMessage(
+          body?.detail?.message || body?.detail || 'The agent run could not be started.'
+        );
+        return;
+      }
+
+      if (Array.isArray(body?.stages) && body.stages.length) {
+        setPipelineStages(body.stages);
+      } else if (Array.isArray(body?.stages_declared)) {
+        setPipelineStages(body.stages_declared);
+      }
+      setApplyMessage(
+        body?.message ||
+          'Agents are running. Watch the stage strip below - results refresh when the chain finishes.'
+      );
+
+      // An inline run has already finished by the time it responds.
+      if (body?.status && body.status !== 'queued') {
         await fetchMatches();
         await fetchDashboardData();
-        setApplyMessage('AI discovery across 8 categories & 6-factor alignment scoring refreshed successfully!');
       }
     } catch (err) {
       console.error(err);
+      setApplyMessage('The agent run could not be started.');
     } finally {
       setIsMatching(false);
+    }
+  };
+
+  /** Refresh the matches as soon as the chain reports it is done. */
+  const handleAgentEvents = (events: AgentEvent[]) => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event.event_type !== 'pipeline.completed') continue;
+      if (event.id && event.id !== lastCompletedRunRef.current) {
+        lastCompletedRunRef.current = event.id;
+        fetchMatches();
+        fetchDashboardData();
+      }
+      return;
     }
   };
 
@@ -377,6 +495,7 @@ export default function IndividualDashboard() {
           `Ingested ${d.filename}: Extracted ${d.extracted_skills?.length || 0} skills, ${d.experience_years || 0} yrs experience. ${d.discovered_opportunities_count || 0} live opportunities matched!`
         );
         fetchDashboardData();
+        refreshSession();
       } else {
         setParseMessage(`Upload error: ${d.detail || d.error || 'Failed to process document'}`);
       }
@@ -401,6 +520,7 @@ export default function IndividualDashboard() {
       if (res.ok) {
         setParseMessage(`Parsed ${d.extracted_skills?.length || 0} skills: ${d.extracted_skills?.join(', ')}`);
         fetchDashboardData();
+        refreshSession();
       }
     } catch (err) {
       console.error(err);
@@ -417,9 +537,11 @@ export default function IndividualDashboard() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
+          full_name: editFullName || undefined,
           title: editTitle,
           bio: editBio,
           skills: skillsArray,
+          location: editLocation || undefined,
           salary_min: editSalaryMin === '' ? null : Number(editSalaryMin),
           salary_max: editSalaryMax === '' ? null : Number(editSalaryMax),
           career_goals: editGoals,
@@ -428,6 +550,7 @@ export default function IndividualDashboard() {
       if (res.ok) {
         setIsEditingProfile(false);
         fetchDashboardData();
+        refreshSession();
       }
     } catch (err) {
       console.error(err);
@@ -467,20 +590,23 @@ export default function IndividualDashboard() {
         <div className="absolute top-0 right-0 w-96 h-96 bg-red-600/10 blur-[90px] pointer-events-none rounded-full" />
 
         <div>
-          <div className="flex items-center gap-2.5 text-xs font-bold uppercase tracking-widest text-red-400 font-mono">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <div className="flex items-center gap-2.5 text-xs font-bold uppercase tracking-widest text-[var(--accent)] font-mono">
+            <span className="w-2 h-2 rounded-full bg-[var(--accent)] animate-pulse" />
             <span>Autonomous Placement Fleet</span>
-            <span className="text-zinc-600">•</span>
-            <span className="text-white">Goal: Get Your Organization Hired</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-white mt-2 tracking-tight flex items-center gap-3">
-            <span>Organization &amp; Talent Hub</span>
-            <span className="apple-glass-pill px-3 py-0.5 text-xs text-zinc-300 font-mono font-bold">
-              Autonomous Fleet Active
-            </span>
+          <h1 className="text-2xl sm:text-3xl font-bold text-[var(--text)] mt-2 tracking-tight">
+            {sessionLoading ? (
+              <span className="skeleton-shimmer inline-block h-8 w-64 rounded align-middle" />
+            ) : firstName || displayName ? (
+              <>Welcome, {firstName || displayName}</>
+            ) : (
+              <>Welcome</>
+            )}
           </h1>
-          <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-2xl leading-relaxed">
-            Your 24/7 autonomous team working continuously to market your capabilities, discover verified client opportunities across 8 channels, and get you hired by enterprises that need your skills.
+          <p className="text-xs sm:text-sm text-[var(--text-muted)] mt-1 max-w-2xl leading-relaxed">
+            {agentReady
+              ? 'Your agents search with your own profile, hand each result to the next agent in the chain, and build an ATS-safe CV for the roles that fit.'
+              : 'Edit your profile to get the best results — the agents search using your data, so what is missing there is what they cannot look for.'}
           </p>
         </div>
 
@@ -517,16 +643,40 @@ export default function IndividualDashboard() {
             <span>My Profile</span>
           </Link>
 
-          <button
-            onClick={handleTriggerSearch}
-            disabled={isMatching}
-            className="apple-button-primary px-6 py-3 text-xs font-semibold flex items-center gap-2 disabled:opacity-50"
+          <Link
+            href="/individual/cv-builder"
+            className="apple-button-secondary px-5 py-3 text-xs font-semibold flex items-center gap-2"
           >
-            <RefreshCw className={`w-4 h-4 text-black ${isMatching ? 'animate-spin' : ''}`} />
-            <span>{isMatching ? 'Scanning 8 Channels…' : 'Scan Client Radar'}</span>
-          </button>
+            <FileText className="w-4 h-4" />
+            <span>ATS CV</span>
+          </Link>
+
+          <Button
+            onClick={handleTriggerSearch}
+            loading={isMatching}
+            disabledReason={
+              !sessionLoading && !agentReady
+                ? gateReason ?? 'Finish your profile before the agents can run.'
+                : undefined
+            }
+            icon={<RefreshCw className="w-4 h-4" />}
+          >
+            {isMatching ? 'Running agents…' : 'Run my agents'}
+          </Button>
         </div>
       </div>
+
+      {/* The gate the user has to clear, and the exact fields still missing. */}
+      <ProfileGate completion={completion} loading={sessionLoading} />
+
+      {gateMessage && (
+        <div className="rounded-2xl border border-[var(--border-red)] bg-[var(--accent-light)] px-4 py-3 text-xs text-[var(--text)]">
+          {gateMessage}{' '}
+          <Link href="/individual/profile" className="underline">
+            Open your profile
+          </Link>
+        </div>
+      )}
 
       {applyMessage && (
         <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-3 text-emerald-300 text-xs backdrop-blur-xl">
@@ -707,7 +857,12 @@ export default function IndividualDashboard() {
 
           {/* Real-time Agent Event Stream */}
           <div className="mb-6">
-            <AgentEventFeed userId={profile?.user_id} title="Live Autonomous Placement Engine" />
+            <AgentEventFeed
+              userId={profile?.user_id}
+              title="Live Autonomous Placement Engine"
+              stages={pipelineStages}
+              onEvents={handleAgentEvents}
+            />
           </div>
 
           {/* TAB 1: Matched Opportunities */}
@@ -1226,6 +1381,31 @@ export default function IndividualDashboard() {
                 </div>
 
                 <form onSubmit={handleUpdateProfile} className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[#9ca3af] mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        disabled={!isEditingProfile}
+                        value={editFullName}
+                        onChange={(e) => setEditFullName(e.target.value)}
+                        placeholder="e.g. Victor Ejike"
+                        className="w-full px-3.5 py-2 bg-[#08080a] border border-white/[0.08] rounded-xl text-white disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[#9ca3af] mb-1">Location</label>
+                      <input
+                        type="text"
+                        disabled={!isEditingProfile}
+                        value={editLocation}
+                        onChange={(e) => setEditLocation(e.target.value)}
+                        placeholder="City, Country"
+                        className="w-full px-3.5 py-2 bg-[#08080a] border border-white/[0.08] rounded-xl text-white disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-[#9ca3af] mb-1">Headline / Target Role</label>
                     <input
@@ -1291,6 +1471,33 @@ export default function IndividualDashboard() {
                     </button>
                   )}
                 </form>
+
+                {/* Verified CV Intelligence Cards */}
+                {profile && (profile.experience?.length > 0 || profile.education?.length > 0) && (
+                  <div className="pt-3 border-t border-white/[0.06] space-y-3">
+                    <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">
+                      Verified Credentials
+                    </div>
+                    {profile.experience && profile.experience.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] text-zinc-500 font-mono">Recent Role:</div>
+                        <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 text-[11px]">
+                          <div className="font-semibold text-white">{profile.experience[0].title}</div>
+                          <div className="text-zinc-400">{profile.experience[0].company} {profile.experience[0].start_date ? `(${profile.experience[0].start_date} - ${profile.experience[0].end_date || 'Present'})` : ''}</div>
+                        </div>
+                      </div>
+                    )}
+                    {profile.education && profile.education.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] text-zinc-500 font-mono">Education:</div>
+                        <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 text-[11px]">
+                          <div className="font-semibold text-white">{profile.education[0].degree}</div>
+                          <div className="text-zinc-400">{profile.education[0].institution} {profile.education[0].year ? `(${profile.education[0].year})` : ''}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1298,8 +1505,8 @@ export default function IndividualDashboard() {
 
         {/* SIDEBAR BENTO MODULES (COL-4) */}
         <div className="lg:col-span-4 space-y-6">
-          {/* Bento Widget 1: Real-Time AI Fleet Stream - backed by the live SSE agent event bus */}
-          <AgentEventFeed userId={profile?.user_id} title="Live Fleet Activity" />
+          {/* The live agent stream lives above the tabs - one SSE connection per
+              page, not two competing for the same feed. */}
 
           {/* Bento Widget 2: Proactive Scout Spotlight */}
           <div className="p-6 rounded-3xl apple-glass space-y-3 relative overflow-hidden">

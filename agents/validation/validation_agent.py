@@ -35,7 +35,14 @@ SOURCE_RELIABILITY_SCORES = {
     "contra": 88,
     "freelancer": 85,
     "andela": 88,
+    "remotive": 85,
     "github": 85,
+    # Google Jobs republishes postings that originate on company boards, so it
+    # ranks above a raw web search but below reading the board directly.
+    "google_jobs": 80,
+    "jobicy": 80,
+    "arbeitnow": 80,
+    "hackernews": 70,
     "reddit": 65,
     "community": 65,
     "google_search": 60,

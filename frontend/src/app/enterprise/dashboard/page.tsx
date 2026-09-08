@@ -193,11 +193,21 @@ export default function EnterpriseDashboard() {
 
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
+  const apiFetch = async (path: string, options?: RequestInit) => {
+    try {
+      const res = await fetch(`/api/enterprise${path}`, options);
+      if (res.ok) return res;
+    } catch {
+      // fallback to direct backend endpoint
+    }
+    return fetch(`http://localhost:8000/v1/enterprise${path}`, options);
+  };
+
   const fetchDashboardData = async () => {
     if (!token) return;
     try {
       // Fetch backend enterprise stats if available
-      const statsRes = await fetch('http://localhost:8000/v1/enterprise/dashboard-stats', {
+      const statsRes = await apiFetch('/dashboard-stats', {
         headers: authHeaders,
       });
       if (statsRes.ok) {
@@ -226,7 +236,7 @@ export default function EnterpriseDashboard() {
 
       // Fetch Client Opportunities - always reflect the real list, even when empty.
       setIsLoadingClients(true);
-      const candRes = await fetch('http://localhost:8000/v1/enterprise/candidates', {
+      const candRes = await apiFetch('/candidates', {
         headers: authHeaders,
       });
       if (candRes.ok) {
@@ -239,7 +249,7 @@ export default function EnterpriseDashboard() {
 
       // Fetch Team - always reflect the real membership list, even when empty.
       setIsLoadingTeam(true);
-      const teamRes = await fetch('http://localhost:8000/v1/enterprise/team', {
+      const teamRes = await apiFetch('/team', {
         headers: authHeaders,
       });
       if (teamRes.ok) {
@@ -272,7 +282,7 @@ export default function EnterpriseDashboard() {
     }
 
     try {
-      await fetch(`http://localhost:8000/v1/enterprise/candidates/${clientId}/stage`, {
+      await apiFetch(`/candidates/${clientId}/stage`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -296,7 +306,7 @@ export default function EnterpriseDashboard() {
     const skillsArray = scoutCompetencies.split(',').map((s) => s.trim()).filter(Boolean);
 
     try {
-      const res = await fetch('http://localhost:8000/v1/enterprise/search-candidates', {
+      const res = await apiFetch('/search-candidates', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -363,7 +373,7 @@ export default function EnterpriseDashboard() {
     setIsAddingClient(false);
 
     try {
-      await fetch('http://localhost:8000/v1/enterprise/candidates', {
+      await apiFetch('/candidates', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -405,7 +415,7 @@ export default function EnterpriseDashboard() {
     setIsInviting(false);
 
     try {
-      await fetch('http://localhost:8000/v1/enterprise/team', {
+      await apiFetch('/team', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -72,6 +72,29 @@ class Settings(BaseSettings):
     github_client_id: Optional[str] = None
     github_client_secret: Optional[str] = None
 
+    # Job-board scraping. All optional: every adapter has a keyless path and
+    # simply returns no results when it cannot reach its source.
+    serpapi_key: Optional[str] = None
+    scrapingdog_key: Optional[str] = None
+    scraper_results_per_source: int = 25
+    scraper_request_timeout_seconds: int = 20
+    scraper_user_agent: str = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
+    # Comma-separated Greenhouse/Lever board tokens to poll, e.g. "stripe,figma".
+    greenhouse_boards: str = ""
+    lever_boards: str = ""
+
+    # Profile gate: agents refuse to run against an unfinished profile, because
+    # discovery quality is bounded by the data the user has actually provided.
+    require_cv_for_agents: bool = True
+    min_profile_completion_for_agents: int = 80
+
+    # Generated CV artifacts
+    generated_cv_dir: str = "./storage/generated_cvs"
+    cv_variants_per_run: int = 3
+
     # Monitoring
     grafana_password: str = "admin"
     prometheus_retention_days: int = 15

@@ -54,39 +54,77 @@ class ContactDiscoveryAgent(BaseAgent):
             return []
     
     async def _search_linkedin(self, company_name: str) -> List[Dict[str, Any]]:
-        """Search for company team on LinkedIn."""
-        try:
-            contacts = [
-                {
-                    "name": "Example Contact",
-                    "title": "VP Engineering",
-                    "linkedin_url": "https://linkedin.com/in/example",
-                    "role_category": "vp_engineering",
-                    "is_decision_maker": True,
-                }
-            ]
-            return contacts
-        except Exception as e:
-            self.logger.warning(f"LinkedIn search error: {e}")
-            return []
+        """LinkedIn team search.
+
+        LinkedIn blocks unauthenticated people-search, and we hold no LinkedIn
+        credentials, so there is nothing to return. The previous version emitted a
+        hardcoded "Example Contact / VP Engineering" for every company, which then
+        flowed into real outreach - an invented person is worse than none.
+        """
+        self.logger.debug("LinkedIn contact search is unavailable (no authenticated source); skipping")
+        return []
 
     async def _search_hunterio(self, company_name: str) -> List[Dict[str, Any]]:
-        """Query Hunter.io for contact discovery."""
-        try:
-            if not company_name:
-                return []
+        """Query Hunter.io for real contacts. Returns [] when no key is configured."""
+        if not company_name:
+            return []
 
-            # Placeholder for Hunter.io integration. In production, use hunter.io API.
-            return [
-                {
-                    "name": "Hunter Contact",
-                    "email": f"contact@{company_name.lower().replace(' ', '')}.com",
-                    "title": "CTO",
+        from backend.app.config import get_settings
+
+        api_key = get_settings().hunter_io_api_key
+        if not api_key:
+            # No guessed `contact@<company>.com`: a pattern-guessed address is not a
+            # discovered contact and must never be presented as one.
+            return []
+
+        domain = company_name if "." in company_name else None
+        try:
+            import httpx
+
+            params: Dict[str, Any] = {"api_key": api_key, "limit": 10}
+            if domain:
+                params["domain"] = domain
+            else:
+                params["company"] = company_name
+
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get("https://api.hunter.io/v2/domain-search", params=params)
+                if resp.status_code != 200:
+                    self.logger.warning("Hunter.io returned %s for %s", resp.status_code, company_name)
+                    return []
+                data = resp.json().get("data", {}) or {}
+
+            contacts: List[Dict[str, Any]] = []
+            for entry in data.get("emails", []) or []:
+                email = entry.get("value")
+                if not email:
+                    continue
+                first = entry.get("first_name")
+                last = entry.get("last_name")
+                full_name = " ".join(p for p in (first, last) if p) or None
+                position = entry.get("position")
+                confidence_pct = entry.get("confidence")
+                contacts.append({
+                    "name": full_name,
+                    "first_name": first,
+                    "last_name": last,
+                    "email": email,
+                    "title": position,
+                    "linkedin_url": entry.get("linkedin"),
                     "source": "hunter.io",
-                    "confidence": "probable",
-                    "is_decision_maker": True,
-                }
-            ]
+                    # Hunter reports a 0-100 deliverability score; map it, don't invent it.
+                    "confidence": (
+                        "verified" if (confidence_pct or 0) >= 90
+                        else "probable" if (confidence_pct or 0) >= 60
+                        else "unverified"
+                    ),
+                    "confidence_score": confidence_pct,
+                    "is_decision_maker": bool(
+                        position and any(role.lower() in position.lower() for role in self.target_roles)
+                    ),
+                    "domain": data.get("domain"),
+                })
+            return contacts
         except Exception as e:
             self.logger.warning(f"Hunter.io lookup error: {e}")
             return []

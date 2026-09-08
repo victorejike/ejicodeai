@@ -76,83 +76,144 @@ class ProposalGenerationAgent(BaseAgent):
         opportunity: Optional[Dict[str, Any]] = None,
         company: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """AI Self-Marketing Engine: Generates truthful, high-impact career marketing assets based on real candidate data.
-        NEVER fabricates skills, experience, jobs, or certifications.
+        """AI Self-Marketing Engine: career assets built strictly from the candidate's own data.
+
+        Every sentence is assembled from something the candidate actually stated.
+        A profile with no skills produces prose with no skill claims - it does not
+        fall back to Python/FastAPI/PostgreSQL and "3 years", and it no longer
+        asserts backend queues, "zero tech debt" or high-concurrency architecture
+        for candidates who never claimed any of it.
         """
-        name = candidate_profile.get("full_name") or "Candidate"
-        title = candidate_profile.get("title") or candidate_profile.get("primary_title") or "Software Engineer"
-        skills = candidate_profile.get("skills", ["Python", "FastAPI", "PostgreSQL"])
+        profile = candidate_profile or {}
+        name = profile.get("full_name") or profile.get("name") or "Candidate"
+        title = profile.get("title") or profile.get("primary_title")
+        skills = [str(s).strip() for s in (profile.get("skills") or []) if str(s).strip()]
         skills_str = ", ".join(skills[:5])
-        years = candidate_profile.get("experience_years", 3.0)
-        company_name = (company or {}).get("name") or (opportunity or {}).get("company_name") or "Target Company"
+
+        years_raw = profile.get("experience_years")
+        try:
+            years = float(years_raw) if years_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            years = None
+        years_phrase = f"{years:.0f}+ years of experience" if years else None
+
+        company_name = (company or {}).get("name") or (opportunity or {}).get("company_name")
         opp_title = (opportunity or {}).get("title") or title
+        addressee = company_name or "your team"
 
-        # 1. Professional Bios
-        short_bio = f"{name} is a results-driven {title} with {years:.0f}+ years of experience engineering scalable systems with {skills_str}."
-        medium_bio = (
-            f"{name} is an experienced {title} specializing in {skills_str}. "
-            f"With over {years:.0f} years of hands-on technical execution, {name} designs robust, production-grade solutions "
-            "focusing on architectural reliability, high-throughput workflows, and measurable business impact."
+        role_phrase = title or "professional"
+        strengths = [str(s).strip() for s in (profile.get("professional_strengths") or []) if str(s).strip()]
+        goals = profile.get("career_goals")
+
+        def sentence(*parts: Optional[str]) -> str:
+            return " ".join(p.strip() for p in parts if p and p.strip())
+
+        # 1. Professional bios - claims only where there is data behind them.
+        short_bio = sentence(
+            f"{name} is a {role_phrase}" + (f" with {years_phrase}" if years_phrase else "") + ".",
+            f"Core skills: {skills_str}." if skills_str else None,
         )
-        full_bio = (
-            f"{medium_bio} Known for translating complex engineering requirements into elegant, maintainable codebases, "
-            f"{name} bridges product strategy with rigorous implementation across modern development environments."
+        medium_bio = sentence(
+            short_bio,
+            f"Strengths they list: {'; '.join(strengths[:3])}." if strengths else None,
+            f"Current focus: {goals}" if goals else None,
+        )
+        full_bio = sentence(
+            medium_bio,
+            f"Education: {self._describe_education(profile)}." if self._describe_education(profile) else None,
+            self._describe_recent_role(profile),
         )
 
-        # 2. Resume Positioning Highlights
-        resume_highlights = [
-            f"Demonstrated track record building production systems with {skills_str}.",
-            f"{years:.0f}+ years of focused hands-on software development across modern architecture.",
-            f"Specialized in backend APIs, asynchronous queues, and database performance optimization.",
+        # 2. Resume positioning - drawn from the profile's own entries.
+        resume_highlights: List[str] = []
+        if skills_str:
+            resume_highlights.append(f"Works with {skills_str}.")
+        if years_phrase:
+            resume_highlights.append(f"{years_phrase} in {role_phrase} roles.")
+        for entry in (profile.get("experience") or [])[:2]:
+            if isinstance(entry, dict):
+                line = sentence(entry.get("title"), "at", entry.get("company"))
+                if line:
+                    resume_highlights.append(line + ".")
+            elif str(entry).strip():
+                resume_highlights.append(str(entry).strip())
+        for strength in strengths[:2]:
+            resume_highlights.append(strength)
+
+        overlap = [
+            s for s in skills
+            if s.lower() in {str(t).lower() for t in ((opportunity or {}).get("tech_required") or [])}
         ]
-
-        # 3. Value Proposition
-        value_proposition = (
-            f"Directly accelerates engineering velocity for {company_name} by applying proven mastery in {skills_str}, "
-            "delivering clean code, zero tech debt accumulation, and resilient system architecture."
+        value_proposition = sentence(
+            f"{name} brings" + (f" {years_phrase}" if years_phrase else "") + f" as a {role_phrase}",
+            f"to {company_name}." if company_name else "to this role.",
+            f"Directly relevant to what the role asks for: {', '.join(overlap[:4])}." if overlap
+            else (f"Relevant skills on file: {skills_str}." if skills_str else
+                  "Add your skills to your profile to sharpen this pitch."),
         )
 
-        # 4. Tailored Cover Letter
-        cover_letter = (
-            f"Dear Hiring Team at {company_name},\n\n"
-            f"I am writing to express my strong interest in the {opp_title} position. "
-            f"With {years:.0f}+ years of engineering experience and deep proficiency in {skills_str}, "
-            f"I have consistently built and scaled resilient backend and product architectures.\n\n"
-            f"What particularly excites me about {company_name} is your commitment to technical excellence. "
-            f"In my previous work, I have architected high-concurrency systems, ensured robust data integrity, "
-            f"and delivered end-to-end features on time. I am eager to bring this same engineering rigor to your team.\n\n"
-            f"Thank you for your consideration. I look forward to discussing how my background can support your milestones.\n\n"
-            f"Warm regards,\n{name}"
+        # 3. Cover letter - the one asset a human reads end to end.
+        letter_opening = (
+            f"I am writing to apply for the {opp_title} position."
+            if opp_title else "I am writing to introduce myself for your current openings."
+        )
+        letter_evidence = sentence(
+            f"I work as a {role_phrase}" + (f" with {years_phrase}" if years_phrase else "") + ".",
+            f"My skills include {skills_str}." if skills_str else None,
+            f"The overlap with your requirements is {', '.join(overlap[:4])}." if overlap else None,
+        )
+        cover_letter = "\n\n".join(
+            p for p in [
+                f"Dear Hiring Team at {addressee},",
+                letter_opening,
+                letter_evidence,
+                f"What draws me to {company_name}: " + (goals or "the direction of the work described in the posting.")
+                if company_name else (f"My current focus: {goals}" if goals else None),
+                "I would welcome the chance to talk through how my background fits what you need.",
+                f"Kind regards,\n{name}",
+            ] if p
         )
 
-        # 5. Freelance / Client Proposal
-        freelance_proposal = (
-            f"Hi {company_name} Team,\n\n"
-            f"I noticed your project requirements for {opp_title}. "
-            f"As a {title} specialized in {skills_str}, I can design, build, and deploy this solution efficiently.\n\n"
-            f"Project Execution Plan:\n"
-            f"1. Discovery & Architecture Review: Align on specifications, API contracts, and schema design.\n"
-            f"2. Core Implementation: Build modular, fully tested components with automated verification.\n"
-            f"3. Integration & Deployment: Seamless deployment, documentation, and performance validation.\n\n"
-            f"I maintain 100% transparency with daily updates and clean commits. Let's schedule a brief call to align on your timeline.\n\n"
-            f"Best,\n{name}"
+        freelance_proposal = "\n\n".join(
+            p for p in [
+                f"Hi {addressee},",
+                sentence(
+                    f"I saw your requirement for {opp_title}." if opp_title else "I saw your project requirement.",
+                    f"As a {role_phrase}" + (f" with {years_phrase}" if years_phrase else "") + ", "
+                    + (f"I work with {skills_str}." if skills_str else "I can scope and deliver this."),
+                ),
+                "How I would run it:\n"
+                "1. Scope and confirm the specification, interfaces and acceptance criteria.\n"
+                "2. Build in reviewable increments with tests.\n"
+                "3. Hand over with documentation and a walkthrough.",
+                "Happy to set up a short call to agree scope and timeline.",
+                f"Best,\n{name}",
+            ] if p
         )
 
-        # 6. Follow-Up Cadence
-        follow_up_day_3 = (
-            f"Hi team, just following up on my application for {opp_title} at {company_name}. "
-            f"I would welcome the opportunity to share how my experience in {skills_str} directly aligns with your current priorities."
+        role_ref = opp_title or "the role"
+        follow_up_day_3 = sentence(
+            f"Hi{' ' + company_name if company_name else ''} team, following up on my application for {role_ref}.",
+            f"Happy to expand on my experience with {skills_str}." if skills_str else "Happy to answer any questions.",
         )
         follow_up_day_7 = (
-            f"Hi team, wanted to check if you have had a chance to review my background for {opp_title}. "
-            "Happy to provide code samples or walk through recent system architecture upon request."
+            f"Hi team, checking whether you have had a chance to review my application for {role_ref}. "
+            "I can share work samples or references if that helps."
         )
         follow_up_day_14 = (
-            f"Hi team, following up one last time regarding {opp_title}. If the position has been filled or priorities have shifted, "
-            "I completely understand and wish your team continued success."
+            f"Hi team, a last follow-up on {role_ref}. If the position is filled or priorities have changed, "
+            "I understand completely - thank you for your time either way."
         )
 
+        missing_for_pitch = [
+            field for field, value in (
+                ("title", title), ("skills", skills), ("experience_years", years),
+                ("career_goals", goals),
+            ) if not value
+        ]
+
         return {
+            # True by construction: nothing here is asserted without profile data.
             "truthfulness_verified": True,
             "candidate_name": name,
             "target_role": opp_title,
@@ -164,9 +225,14 @@ class ProposalGenerationAgent(BaseAgent):
             },
             "resume_highlights": resume_highlights,
             "value_proposition": value_proposition,
-            "company_pitch": f"How {name} helps {company_name} scale {opp_title} without overhead.",
+            "company_pitch": (
+                f"How {name} helps {company_name} with {role_ref}." if company_name
+                else f"How {name} contributes as a {role_phrase}."
+            ),
             "cover_letter": cover_letter,
             "freelance_proposal": freelance_proposal,
+            "matched_requirements": overlap,
+            "missing_profile_fields": missing_for_pitch,
             "follow_up_cadence": {
                 "day_3": follow_up_day_3,
                 "day_7": follow_up_day_7,
@@ -174,6 +240,29 @@ class ProposalGenerationAgent(BaseAgent):
             },
             "generated_at": datetime.utcnow().isoformat(),
         }
+
+    @staticmethod
+    def _describe_education(profile: Dict[str, Any]) -> Optional[str]:
+        """Highest education entry as a phrase, or None when none is on file."""
+        for entry in (profile.get("education") or []):
+            if isinstance(entry, dict):
+                parts = [entry.get("degree"), entry.get("field"), entry.get("institution")]
+                text = ", ".join(p for p in parts if p)
+                if text:
+                    return text
+            elif str(entry).strip():
+                return str(entry).strip()
+        return None
+
+    @staticmethod
+    def _describe_recent_role(profile: Dict[str, Any]) -> Optional[str]:
+        """One sentence about the most recent role the profile lists."""
+        for entry in (profile.get("experience") or []):
+            if isinstance(entry, dict) and (entry.get("title") or entry.get("company")):
+                title = entry.get("title") or "Their most recent role"
+                company = entry.get("company")
+                return f"Most recently {title}" + (f" at {company}." if company else ".")
+        return None
 
     async def validate_output(self, output_data: dict) -> bool:
         return bool(output_data.get("subject")) and bool(output_data.get("body"))

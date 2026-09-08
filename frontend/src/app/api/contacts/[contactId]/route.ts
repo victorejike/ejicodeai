@@ -3,7 +3,7 @@ import { backendFetch } from '../../_client';
 
 export async function GET(req: Request, { params }: { params: { contactId: string } }) {
   try {
-    const res = await backendFetch(`/v1/contacts/${params.contactId}`);
+    const res = await backendFetch(`/v1/contacts/${params.contactId}`, {}, req);
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {

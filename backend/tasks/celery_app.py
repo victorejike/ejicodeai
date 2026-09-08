@@ -28,10 +28,15 @@ celery_app.conf.update(
 )
 
 # Define periodic tasks
+#
+# The career work is scheduled *per user*: `fan_out_career_pipelines` enumerates
+# the candidates whose profiles the agents can work from and who left continuous
+# search on, then enqueues one pipeline each. A single global run would search for
+# nobody in particular.
 celery_app.conf.beat_schedule = {
-    "job-discovery-daily": {
-        "task": "backend.tasks.agent_tasks.run_job_scout",
-        "schedule": crontab(hour=6, minute=0),
+    "career-pipelines-daily": {
+        "task": "backend.tasks.agent_tasks.fan_out_career_pipelines",
+        "schedule": crontab(hour=6, minute=10),
         "options": {"queue": "agents"},
     },
     "company-discovery-daily": {

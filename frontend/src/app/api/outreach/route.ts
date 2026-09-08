@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { backendFetch } from '../_client';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const res = await backendFetch('/v1/outreach?limit=100');
+    const res = await backendFetch('/v1/outreach?limit=100', {}, req);
     const text = await res.text();
     if (!text) {
       return NextResponse.json({ outreach: [] }, { status: res.status });

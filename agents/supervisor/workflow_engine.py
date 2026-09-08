@@ -202,8 +202,14 @@ class WorkflowEngine:
         execution_id: str,
         agent_name: str,
         error_message: str,
+        terminal: bool = False,
     ) -> bool:
-        """Handle step failure with retry policy. Returns True if retrying, False if marked failed."""
+        """Handle step failure with retry policy. Returns True if retrying, False if marked failed.
+
+        ``terminal=True`` skips the retry policy: some failures - an incomplete
+        profile, a refusal to score without candidate data - will fail identically
+        on every attempt, and retrying them only delays telling the user why.
+        """
         async with async_session() as session:
             wf = await session.get(WorkflowExecution, execution_id)
             stmt = select(WorkflowStep).where(
@@ -219,7 +225,7 @@ class WorkflowEngine:
                 return False
 
             step.error_message = error_message
-            if step.retry_count < step.max_retries:
+            if not terminal and step.retry_count < step.max_retries:
                 step.retry_count += 1
                 step.status = "retrying"
                 if wf:

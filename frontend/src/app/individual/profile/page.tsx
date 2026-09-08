@@ -20,6 +20,10 @@ import {
   RefreshCw,
   AlertCircle,
   ShieldCheck,
+  GraduationCap,
+  Award,
+  FolderGit2,
+  Calendar,
 } from 'lucide-react';
 
 interface ProfileData {
@@ -28,6 +32,32 @@ interface ProfileData {
   bio: string | null;
   skills: string[];
   experience_years: number | null;
+  experience?: Array<{
+    title?: string;
+    company?: string;
+    start_date?: string;
+    end_date?: string;
+    is_current?: boolean;
+    bullets?: string[];
+  }>;
+  education?: Array<{
+    degree?: string;
+    institution?: string;
+    year?: number;
+    details?: string;
+  }>;
+  certifications?: Array<{
+    name?: string;
+    issuer?: string;
+    year?: number;
+    details?: string;
+  }>;
+  projects?: Array<{
+    name?: string;
+    description?: string;
+    tech_stack?: string[];
+    url?: string;
+  }>;
   location: string | null;
   remote_preference: string | null;
   salary_min: number | null;
@@ -50,6 +80,7 @@ export default function IndividualProfilePage() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
 
   // Form fields
+  const [fullName, setFullName] = useState('');
   const [title, setTitle] = useState('');
   const [bio, setBio] = useState('');
   const [skillsStr, setSkillsStr] = useState('');
@@ -90,6 +121,7 @@ export default function IndividualProfilePage() {
       if (res.ok && data.profile) {
         const p: ProfileData = data.profile;
         setProfile(p);
+        setFullName(p.full_name || '');
         setTitle(p.title || '');
         setBio(p.bio || '');
         setSkillsStr((p.skills || []).join(', '));
@@ -142,6 +174,21 @@ export default function IndividualProfilePage() {
           : 'CV uploaded and stored. No skills could be confidently extracted \u2014 you can add them manually below.'
       );
 
+      if (data.profile) {
+        const p = data.profile;
+        setProfile(p);
+        if (p.full_name) setFullName(p.full_name);
+        if (p.title) setTitle(p.title);
+        if (p.bio) setBio(p.bio);
+        if (p.skills) setSkillsStr((p.skills || []).join(', '));
+        if (p.experience_years != null) setExperienceYears(String(p.experience_years));
+        if (p.location) setLocation(p.location);
+        if (p.career_goals) setCareerGoals(p.career_goals);
+        if (p.portfolio_url) setPortfolioUrl(p.portfolio_url);
+        if (p.github_url) setGithubUrl(p.github_url);
+        if (p.linkedin_url) setLinkedinUrl(p.linkedin_url);
+      }
+
       await fetchProfile(token);
     } catch (err: any) {
       setCvError(err.message || 'Failed to upload CV. Please try again.');
@@ -169,6 +216,7 @@ export default function IndividualProfilePage() {
         .filter(Boolean);
 
       const payload: Record<string, any> = {
+        full_name: fullName || undefined,
         title: title || undefined,
         bio: bio || undefined,
         skills,
@@ -338,14 +386,139 @@ export default function IndividualProfilePage() {
               )}
             </div>
 
+            {/* Extracted Career Intelligence Bento (Rendered when CV has been ingested) */}
+            {profile && (profile.experience?.length || profile.education?.length || profile.certifications?.length || profile.projects?.length) ? (
+              <div className="apple-glass rounded-3xl p-6 sm:p-8 space-y-6">
+                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                  <div className="flex items-center gap-2.5">
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                    <h2 className="text-sm font-bold text-white uppercase tracking-wide">Extracted CV Intelligence</h2>
+                  </div>
+                  <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                    Factual &bull; Zero Hallucination
+                  </span>
+                </div>
+
+                {/* Work Experience */}
+                {profile.experience && profile.experience.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                      <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Work Experience ({profile.experience.length})</span>
+                    </div>
+                    <div className="grid gap-3">
+                      {profile.experience.map((exp, idx) => (
+                        <div key={idx} className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-1.5">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <span className="text-sm font-bold text-white">{exp.title}</span>
+                            {(exp.start_date || exp.end_date) && (
+                              <span className="text-[11px] font-mono text-zinc-400 flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-zinc-500" />
+                                {exp.start_date} {exp.end_date ? `— ${exp.end_date}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          {exp.company && (
+                            <div className="text-xs text-blue-300 font-medium">{exp.company}</div>
+                          )}
+                          {exp.bullets && exp.bullets.length > 0 && (
+                            <ul className="list-disc list-inside text-xs text-zinc-400 space-y-1 pt-1 pl-1">
+                              {exp.bullets.slice(0, 3).map((b, bIdx) => (
+                                <li key={bIdx} className="leading-relaxed">{b}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Education & Certifications Grid */}
+                <div className="grid sm:grid-cols-2 gap-4">
+                  {/* Education */}
+                  {profile.education && profile.education.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                        <GraduationCap className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Education</span>
+                      </div>
+                      <div className="space-y-2">
+                        {profile.education.map((edu, idx) => (
+                          <div key={idx} className="p-3 rounded-xl bg-white/[0.03] border border-white/5 text-xs">
+                            <div className="font-semibold text-white">{edu.degree}</div>
+                            <div className="text-zinc-400">{edu.institution} {edu.year ? `(${edu.year})` : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Certifications */}
+                  {profile.certifications && profile.certifications.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                        <Award className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Certifications</span>
+                      </div>
+                      <div className="space-y-2">
+                        {profile.certifications.map((cert, idx) => (
+                          <div key={idx} className="p-3 rounded-xl bg-white/[0.03] border border-white/5 text-xs">
+                            <div className="font-semibold text-white">{cert.name}</div>
+                            <div className="text-zinc-400">{cert.issuer} {cert.year ? `(${cert.year})` : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Projects */}
+                {profile.projects && profile.projects.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                      <FolderGit2 className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Projects</span>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      {profile.projects.map((proj, idx) => (
+                        <div key={idx} className="p-3 rounded-xl bg-white/[0.03] border border-white/5 text-xs space-y-1">
+                          <div className="font-semibold text-white">{proj.name}</div>
+                          {proj.description && <div className="text-zinc-400 text-[11px] line-clamp-2">{proj.description}</div>}
+                          {proj.url && (
+                            <a href={proj.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-[11px] block truncate">
+                              {proj.url}
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
             {/* Manual profile form */}
             <form onSubmit={handleSaveProfile} className="apple-glass rounded-3xl p-6 sm:p-8 space-y-5">
               <div className="flex items-center gap-2.5">
                 <User className="w-4 h-4 text-blue-400" />
-                <h2 className="text-sm font-bold text-white uppercase tracking-wide">Or enter your details manually</h2>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wide">Profile Parameters</h2>
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1.5">Full Name</label>
+                  <div className="relative">
+                    <User className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
+                    <input
+                      type="text"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="e.g. Victor Ejike"
+                      className="w-full pl-9 pr-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50"
+                    />
+                  </div>
+                </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-300 mb-1.5">Professional Title / Headline</label>
                   <div className="relative">
@@ -359,6 +532,9 @@ export default function IndividualProfilePage() {
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="grid sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-zinc-300 mb-1.5">Years of Experience</label>
                   <input
@@ -371,31 +547,6 @@ export default function IndividualProfilePage() {
                     className="w-full px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Skills (comma-separated)</label>
-                <input
-                  type="text"
-                  value={skillsStr}
-                  onChange={(e) => setSkillsStr(e.target.value)}
-                  placeholder="e.g. Python, FastAPI, PostgreSQL, React"
-                  className="w-full px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Short Bio</label>
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  rows={3}
-                  placeholder="A couple of sentences about your background."
-                  className="w-full px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50 resize-none"
-                />
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-zinc-300 mb-1.5">Location</label>
                   <div className="relative">
@@ -422,6 +573,28 @@ export default function IndividualProfilePage() {
                     <option value="any">Any Work Mode</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Skills (comma-separated)</label>
+                <input
+                  type="text"
+                  value={skillsStr}
+                  onChange={(e) => setSkillsStr(e.target.value)}
+                  placeholder="e.g. Python, FastAPI, PostgreSQL, React"
+                  className="w-full px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Short Bio</label>
+                <textarea
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  rows={3}
+                  placeholder="A couple of sentences about your background."
+                  className="w-full px-4 py-2.5 bg-black/40 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-blue-400/50 resize-none"
+                />
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">

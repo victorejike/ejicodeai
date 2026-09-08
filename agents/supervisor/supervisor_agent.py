@@ -123,6 +123,11 @@ class SupervisorAgent(BaseAgent):
         state["status"] = AgentStatus.RUNNING
         state["run_id"] = supervisor_run_id
 
+        # Carried across every stage so the scoring agents work against the real
+        # person rather than re-deriving (or inventing) a candidate.
+        initial_input = state.get("input_data", {}) or {}
+        candidate_profile = initial_input.get("candidate_profile") or initial_input.get("profile") or {}
+
         discovered_opps: List[Dict[str, Any]] = []
         discovered_companies: List[Dict[str, Any]] = []
         ranked_opps: List[Dict[str, Any]] = []
@@ -153,6 +158,7 @@ class SupervisorAgent(BaseAgent):
             ranking_input = {
                 "opportunities": all_opps,
                 "companies": {c.get("name", ""): c for c in discovered_companies},
+                "candidate_profile": candidate_profile,
             }
             state = self._update_state(state, {"input_data": ranking_input})
             state = await self._route_to_agent("ranking", state)

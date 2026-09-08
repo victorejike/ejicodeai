@@ -225,10 +225,18 @@ async def test_profile_analyzer_and_search_strategy():
     assert result["status"] == AgentStatus.SUCCESS
     analysis = result["output_data"]["analysis"]
 
-    assert analysis["seniority_level"] == "Staff / Principal"
+    assert analysis["candidate_intelligence_profile"]["seniority_level"] == "Staff / Principal"
     assert len(analysis["search_queries"]) >= 2
     assert any("Go" in q for q in analysis["search_queries"])
-    assert "linkedin" in analysis["target_sources"]
+
+    # Target sources must be sources we can actually query - never a name with no
+    # adapter behind it - and company boards are skipped until the candidate
+    # names companies to watch.
+    registry_sources = set(ScraperRegistry().available_sources)
+    assert analysis["target_sources"]
+    assert set(analysis["target_sources"]).issubset(registry_sources)
+    assert "greenhouse" not in analysis["target_sources"]
+    assert "lever" not in analysis["target_sources"]
 
 
 @pytest.mark.asyncio
@@ -288,13 +296,62 @@ async def test_rejection_recovery_agent():
 
 @pytest.mark.asyncio
 async def test_scraper_registry_multi_source():
+    """Discovery fans every search term out across every real registered source."""
     registry = ScraperRegistry()
+
+    # Only sources with an adapter behind them may be queried; a source name
+    # nothing implements must be dropped rather than silently reported as used.
+    assert "google_jobs" in registry.available_sources
+    assert set(registry.available_sources) == set(registry.opportunity_adapters)
+
+    calls = []
+
+    class _StubAdapter:
+        def __init__(self, source, items):
+            self.source = source
+            self.items = items
+
+        async def search(self, query, filters=None):
+            calls.append((self.source, query))
+            return [dict(item) for item in self.items]
+
+    # greenhouse (reliability 98) and remoteok (lower) advertise the same posting;
+    # the higher-trust copy must be the one that survives deduplication.
+    posting = {
+        "title": "Senior Python Engineer",
+        "company_name": "Aether AI",
+        "source_url": "https://boards.greenhouse.io/aether/jobs/1",
+    }
+    registry.opportunity_adapters = {
+        "greenhouse": _StubAdapter("greenhouse", [{**posting, "source": "greenhouse", "description": "Full role brief."}]),
+        "remoteok": _StubAdapter("remoteok", [{**posting, "source": "remoteok", "description": ""}]),
+        "google_jobs": _StubAdapter("google_jobs", [{
+            "title": "Backend Engineer",
+            "company_name": "Northwind",
+            "source_url": "https://www.google.com/search?q=northwind",
+            "source": "google_jobs",
+        }]),
+    }
+
     results = await registry.search_all(
-        query="Python FastAPI",
-        sources=["google_search", "github", "reddit"],
+        queries=["Python FastAPI", "Backend Engineer", "python fastapi"],
+        sources=["greenhouse", "remoteok", "google_jobs", "no_such_source"],
     )
-    assert len(results) >= 3
-    sources_returned = {r["source"] for r in results}
-    assert "google_search" in sources_returned
-    assert "github" in sources_returned
-    assert "reddit" in sources_returned
+
+    # Two distinct terms ("python fastapi" repeats) x three known sources.
+    assert len(calls) == 6
+    assert {c[0] for c in calls} == {"greenhouse", "remoteok", "google_jobs"}
+    assert "no_such_source" not in {c[0] for c in calls}
+
+    assert len(results) == 2
+    by_url = {r["source_url"]: r for r in results}
+    assert by_url[posting["source_url"]]["source"] == "greenhouse"
+    assert by_url["https://www.google.com/search?q=northwind"]["source"] == "google_jobs"
+
+
+@pytest.mark.asyncio
+async def test_scraper_registry_requires_search_terms():
+    """No search term means no discovery - never a blind global feed."""
+    registry = ScraperRegistry()
+    assert await registry.search_opportunities() == []
+    assert await registry.search_opportunities(queries=["  "]) == []
