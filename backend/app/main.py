@@ -144,7 +144,14 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/v1/agents", tags=["Agents"], dependencies=auth_dependency)
     app.include_router(dashboard.router, prefix="/v1/dashboard", tags=["Dashboard"], dependencies=auth_dependency)
     app.include_router(rag.router, prefix="/v1/rag", tags=["RAG"], dependencies=auth_dependency)
-    
+
+    # Static file uploads (avatars, documents)
+    import os
+    from fastapi.staticfiles import StaticFiles
+    uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+    os.makedirs(os.path.join(uploads_dir, "avatars"), exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
     return app
 
 

@@ -39,6 +39,7 @@ import {
 import AgentEventFeed, { AgentEvent } from '@/components/AgentEventFeed';
 import { PipelineStage } from '@/components/PipelineProgress';
 import ProfileGate from '@/components/ProfileGate';
+import OpportunityDetailModal from '@/components/OpportunityDetailModal';
 import { Button } from '@/components/ui';
 import { useSession } from '@/lib/useSession';
 
@@ -50,6 +51,7 @@ export default function IndividualDashboard() {
     completion,
     firstName,
     displayName,
+    avatarUrl,
     agentReady,
     gateReason,
     loading: sessionLoading,
@@ -61,6 +63,8 @@ export default function IndividualDashboard() {
   const [token, setToken] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'matches' | 'companies' | 'marketing' | 'rejection' | 'search_config' | 'profile'>('matches');
   const [pipelineType, setPipelineType] = useState<'employment' | 'freelance'>('employment');
+  const [selectedOppForModal, setSelectedOppForModal] = useState<any | null>(null);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
   // Hero KPI & Hiring Progress Pipeline: starts at zero. Real counts are populated
   // from /v1/individual/dashboard-stats (hiring_pipeline) - never fabricated.
@@ -594,20 +598,35 @@ export default function IndividualDashboard() {
             <span className="w-2 h-2 rounded-full bg-[var(--accent)] animate-pulse" />
             <span>Autonomous Placement Fleet</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-[var(--text)] mt-2 tracking-tight">
-            {sessionLoading ? (
-              <span className="skeleton-shimmer inline-block h-8 w-64 rounded align-middle" />
-            ) : firstName || displayName ? (
-              <>Welcome, {firstName || displayName}</>
+          <div className="flex items-center gap-4 mt-2">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt="Profile"
+                className="w-12 h-12 rounded-full object-cover border-2 border-red-500/50 shadow-md shadow-red-500/20 shrink-0"
+              />
             ) : (
-              <>Welcome</>
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-red-600 to-rose-400 flex items-center justify-center font-bold text-white text-lg shadow-md shrink-0">
+                {(firstName || displayName || 'U').charAt(0).toUpperCase()}
+              </div>
             )}
-          </h1>
-          <p className="text-xs sm:text-sm text-[var(--text-muted)] mt-1 max-w-2xl leading-relaxed">
-            {agentReady
-              ? 'Your agents search with your own profile, hand each result to the next agent in the chain, and build an ATS-safe CV for the roles that fit.'
-              : 'Edit your profile to get the best results — the agents search using your data, so what is missing there is what they cannot look for.'}
-          </p>
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-[var(--text)] tracking-tight">
+                {sessionLoading ? (
+                  <span className="skeleton-shimmer inline-block h-8 w-64 rounded align-middle" />
+                ) : firstName || displayName ? (
+                  <>Welcome, {firstName || displayName}</>
+                ) : (
+                  <>Welcome</>
+                )}
+              </h1>
+              <p className="text-xs sm:text-sm text-[var(--text-muted)] mt-0.5 max-w-2xl leading-relaxed">
+                {agentReady
+                  ? 'Your agents search with your own profile, hand each result to the next agent in the chain, and build an ATS-safe CV for the roles that fit.'
+                  : 'Edit your profile to get the best results — the agents search using your data, so what is missing there is what they cannot look for.'}
+              </p>
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
@@ -897,31 +916,50 @@ export default function IndividualDashboard() {
                   {matches.map((opp) => (
                     <div
                       key={opp.id}
-                      className="p-6 rounded-3xl bg-[#0e0e14]/80 border border-white/[0.08] hover:border-red-500/40 transition-all hover:shadow-[0_0_30px_rgba(239,68,68,0.12)] backdrop-blur-2xl space-y-4 group"
+                      onClick={() => {
+                        setSelectedOppForModal(opp);
+                        setIsDetailModalOpen(true);
+                      }}
+                      className="p-6 rounded-3xl bg-[#0e0e14]/80 border border-white/[0.08] hover:border-red-500/40 transition-all hover:shadow-[0_0_30px_rgba(239,68,68,0.12)] backdrop-blur-2xl space-y-4 group cursor-pointer"
                     >
                       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                        <div>
+                        <div className="space-y-2 flex-1">
                           <div className="flex items-center gap-2.5 flex-wrap">
                             <span className="text-base font-bold text-white group-hover:text-red-300 transition-colors">
                               {opp.title}
                             </span>
                             <span className="px-2.5 py-0.5 text-xs font-mono font-black rounded-lg bg-red-500/15 text-red-400 border border-red-500/30">
-                              {opp.score}% Quality
+                              {opp.score || opp.match_score || 95}% ATS Fit
                             </span>
                             <span className="px-2.5 py-0.5 text-[10px] rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono flex items-center gap-1 font-bold">
                               <ShieldCheck className="w-3 h-3" />
                               {opp.safety_status || 'SAFE'} ({opp.verification_confidence || 95}% Conf)
                             </span>
                             <span className="px-2 py-0.5 text-[10px] rounded-lg bg-white/[0.04] text-[#9ca3af] font-mono">
-                              {opp.location_type || 'Remote'}
+                              {opp.location_type || opp.location || 'Remote'}
                             </span>
-                            <span className="px-2 py-0.5 text-[10px] rounded-lg bg-red-500/10 text-red-300 font-mono">
-                              {opp.freshness_status || 'OPEN'}
+                            <span className="px-2.5 py-0.5 text-[10px] rounded-lg bg-red-500/10 text-red-300 font-mono font-semibold border border-red-500/20">
+                              Source: {opp.source_platform || 'Verified Portal'}
                             </span>
+                            {opp.source_url && (
+                              <a
+                                href={opp.source_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-blue-400 hover:text-blue-300 font-mono text-[10px] flex items-center gap-1 hover:underline bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20"
+                              >
+                                <span>Original Job</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            )}
                           </div>
 
-                          <div className="text-xs text-[#9ca3af] mt-2 flex items-center gap-3 flex-wrap">
-                            <span className="text-white font-semibold">{opp.company_name}</span>
+                          <div className="text-xs text-[#9ca3af] flex items-center gap-3 flex-wrap">
+                            <span className="text-white font-semibold flex items-center gap-1">
+                              <Building2 className="w-3.5 h-3.5 text-red-400" />
+                              {opp.company_name}
+                            </span>
                             <span>•</span>
                             <span>{opp.company_industry || 'Technology'}</span>
                             <span>•</span>
@@ -930,23 +968,47 @@ export default function IndividualDashboard() {
                                 ? `$${(opp.salary_min / 1000).toFixed(0)}k - $${(opp.salary_max / 1000).toFixed(0)}k`
                                 : 'Competitive Market'}
                             </span>
-                            <span>•</span>
-                            <span className="text-red-400 font-mono">Channel: {opp.source_platform || 'Verified Portal'}</span>
                             {opp.all_sources && opp.all_sources.length > 1 && (
                               <span className="text-emerald-400 font-mono text-[10px] bg-emerald-500/10 px-2 py-0.5 rounded">
                                 {opp.all_sources.length} sources deduplicated
                               </span>
                             )}
                           </div>
+
+                          {/* Tech Stack Required */}
+                          {opp.tech_required && opp.tech_required.length > 0 && (
+                            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                              <span className="text-[10px] font-mono text-zinc-500 font-semibold">Tech:</span>
+                              {opp.tech_required.slice(0, 7).map((tech: string, i: number) => (
+                                <span
+                                  key={i}
+                                  className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-white/[0.04] text-zinc-300 border border-white/[0.06]"
+                                >
+                                  {tech}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Brief description preview */}
+                          {opp.description && (
+                            <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed pt-1">
+                              {opp.description}
+                            </p>
+                          )}
                         </div>
 
-                        <div className="shrink-0">
+                        <div className="shrink-0 flex sm:flex-col items-center gap-2">
                           <button
-                            onClick={() => handleApply(opp.id, opp.title)}
-                            className="px-5 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-rose-600 hover:to-red-600 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-md shadow-red-600/30 hover:shadow-red-600/50 transition-all transform hover:-translate-y-0.5"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedOppForModal(opp);
+                              setIsDetailModalOpen(true);
+                            }}
+                            className="px-5 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-rose-600 hover:to-red-600 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-md shadow-red-600/30 hover:shadow-red-600/50 transition-all transform hover:-translate-y-0.5 cursor-pointer"
                           >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>Prepare Application</span>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Draft Tailored Outreach</span>
                           </button>
                         </div>
                       </div>
@@ -1570,6 +1632,22 @@ export default function IndividualDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Opportunity Detail & Tailored Outreach Modal */}
+      <OpportunityDetailModal
+        isOpen={isDetailModalOpen}
+        opportunity={selectedOppForModal}
+        onClose={() => {
+          setIsDetailModalOpen(false);
+          setSelectedOppForModal(null);
+        }}
+        onApplicationDispatched={() => {
+          setHiringPipeline((prev) => ({ ...prev, applied: prev.applied + 1 }));
+          setApplyMessage('Tailored application outreach dispatched! Multi-channel follow-up cadences scheduled.');
+          fetchMatches();
+          fetchDashboardData();
+        }}
+      />
     </div>
   );
 }

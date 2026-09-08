@@ -100,22 +100,65 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => v
   );
 }
 
-function Brand({ compact = false }: { compact?: boolean }) {
+function Brand({
+  compact = false,
+  avatarUrl = null,
+  displayName = null,
+  firstName = null,
+}: {
+  compact?: boolean;
+  avatarUrl?: string | null;
+  displayName?: string | null;
+  firstName?: string | null;
+}) {
+  const hasAvatar = Boolean(avatarUrl);
+  const initial = (firstName || displayName || 'E').charAt(0).toUpperCase();
+
   return (
     <Link href="/" className="group flex items-center gap-3">
-      <div
-        className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--btn-primary-bg)] font-mono text-xs font-black text-[var(--btn-primary-fg)] transition-transform group-hover:scale-105 ${
-          compact ? 'h-7 w-7' : 'h-8 w-8'
-        }`}
-      >
-        E
-      </div>
-      {compact ? (
-        <span className="font-mono text-sm font-bold text-[var(--text)]">EJICODE_AI</span>
+      {hasAvatar ? (
+        <div
+          className={`relative shrink-0 overflow-hidden rounded-full border-2 border-red-500/80 shadow-[0_0_16px_rgba(239,68,68,0.5)] ring-2 ring-red-500/25 transition-all duration-300 group-hover:scale-105 group-hover:shadow-[0_0_24px_rgba(239,68,68,0.7)] ${
+            compact ? 'h-8 w-8' : 'h-10 w-10'
+          }`}
+        >
+          <img
+            src={avatarUrl!}
+            alt={displayName || 'Profile'}
+            className="h-full w-full object-cover"
+          />
+          <span className="absolute inset-0 rounded-full ring-1 ring-inset ring-white/20 pointer-events-none" />
+        </div>
+      ) : displayName ? (
+        <div
+          className={`relative flex shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-red-600 via-rose-500 to-amber-500 font-mono text-xs font-black text-white shadow-[0_0_15px_rgba(239,68,68,0.4)] ring-2 ring-red-500/20 transition-transform group-hover:scale-105 ${
+            compact ? 'h-8 w-8' : 'h-10 w-10'
+          }`}
+        >
+          {initial}
+          <span className="absolute inset-0 rounded-full ring-1 ring-inset ring-white/20 pointer-events-none" />
+        </div>
       ) : (
-        <div>
-          <div className="font-mono text-sm font-bold tracking-tight text-[var(--text)]">EJICODE_AI</div>
-          <div className="text-[10px] tracking-wide text-[var(--text-muted)]">Autonomous Career Agents</div>
+        <div
+          className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--btn-primary-bg)] font-mono text-xs font-black text-[var(--btn-primary-fg)] transition-transform group-hover:scale-105 shadow-[0_0_15px_rgba(239,68,68,0.3)] border border-red-500/40 ${
+            compact ? 'h-7 w-7' : 'h-8 w-8'
+          }`}
+        >
+          E
+        </div>
+      )}
+      {compact ? (
+        <span className="font-mono text-sm font-bold text-[var(--text)] truncate max-w-[130px]">
+          {displayName || 'EJICODE_AI'}
+        </span>
+      ) : (
+        <div className="min-w-0">
+          <div className="font-mono text-sm font-bold tracking-tight text-[var(--text)] truncate">
+            {displayName || 'EJICODE_AI'}
+          </div>
+          <div className="text-[10px] tracking-wide text-[var(--text-muted)] truncate">
+            {displayName ? 'Verified Candidate Profile' : 'Autonomous Career Agents'}
+          </div>
         </div>
       )}
     </Link>
@@ -140,16 +183,22 @@ function Sidebar({
   onLogout,
   theme,
   toggleTheme,
+  avatarUrl,
+  displayName,
+  firstName,
 }: {
   items: NavItem[];
   onLogout: () => void;
   theme: string;
   toggleTheme: () => void;
+  avatarUrl?: string | null;
+  displayName?: string | null;
+  firstName?: string | null;
 }) {
   return (
     <aside className="relative z-20 hidden min-h-screen w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--sidebar)] backdrop-blur-3xl md:flex">
       <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-5">
-        <Brand />
+        <Brand avatarUrl={avatarUrl} displayName={displayName} firstName={firstName} />
         <ThemeButton theme={theme} toggleTheme={toggleTheme} />
       </div>
 
@@ -180,17 +229,23 @@ function TopBar({
   onLogout,
   theme,
   toggleTheme,
+  avatarUrl,
+  displayName,
+  firstName,
 }: {
   items: NavItem[];
   onLogout: () => void;
   theme: string;
   toggleTheme: () => void;
+  avatarUrl?: string | null;
+  displayName?: string | null;
+  firstName?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <header className="sticky top-0 z-50 border-b border-[var(--border)] bg-[var(--sidebar)] backdrop-blur-2xl md:hidden">
       <div className="flex items-center justify-between px-4 py-3">
-        <Brand compact />
+        <Brand compact avatarUrl={avatarUrl} displayName={displayName} firstName={firstName} />
         <div className="flex items-center gap-2">
           <ThemeButton theme={theme} toggleTheme={toggleTheme} />
           <button
@@ -234,7 +289,7 @@ function AppChrome({
   toggleTheme: () => void;
   onLogout: () => void;
 }) {
-  const { firstName, displayName, accountType, user, completion, agentReady, loading } = useSession();
+  const { firstName, displayName, accountType, user, avatarUrl, completion, agentReady, loading } = useSession();
   const items = visibleNav(accountType, Boolean(user?.is_superuser));
   const percent = completion?.percent ?? null;
 
@@ -245,13 +300,38 @@ function AppChrome({
         <div className="animate-aurora-red absolute bottom-10 left-1/3 h-[500px] w-[500px] rounded-full bg-rose-600/[0.04] blur-[150px]" />
       </div>
 
-      <Sidebar items={items} onLogout={onLogout} theme={theme} toggleTheme={toggleTheme} />
+      <Sidebar
+        items={items}
+        onLogout={onLogout}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        avatarUrl={avatarUrl}
+        displayName={displayName}
+        firstName={firstName}
+      />
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
-        <TopBar items={items} onLogout={onLogout} theme={theme} toggleTheme={toggleTheme} />
+        <TopBar
+          items={items}
+          onLogout={onLogout}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          avatarUrl={avatarUrl}
+          displayName={displayName}
+          firstName={firstName}
+        />
 
-        {/* Identity strip: the greeting the user asked for, on every page. */}
+        {/* Identity strip: the greeting the user asked for, on every page with glowing avatar. */}
         <div className="hidden items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--sidebar)] px-6 py-2.5 text-[11px] text-[var(--text-muted)] backdrop-blur-2xl md:flex">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-3">
+            {avatarUrl ? (
+              <div className="relative h-6 w-6 shrink-0 overflow-hidden rounded-full border border-red-500/80 shadow-[0_0_10px_rgba(239,68,68,0.5)] ring-1 ring-red-500/30">
+                <img src={avatarUrl} alt={displayName || 'User'} className="h-full w-full object-cover" />
+              </div>
+            ) : firstName || displayName ? (
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-600/30 border border-red-500/50 text-[10px] font-bold text-red-300">
+                {(firstName || displayName || 'U').charAt(0).toUpperCase()}
+              </div>
+            ) : null}
             {loading ? (
               <span className="skeleton-shimmer h-3 w-40 rounded" />
             ) : firstName || displayName ? (

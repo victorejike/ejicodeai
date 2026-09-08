@@ -24,9 +24,12 @@ import {
   Award,
   FolderGit2,
   Calendar,
+  Camera,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 interface ProfileData {
+  avatar_url?: string | null;
   full_name: string | null;
   title: string | null;
   bio: string | null;
@@ -74,10 +77,12 @@ interface ProfileData {
 export default function IndividualProfilePage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   // Form fields
   const [fullName, setFullName] = useState('');
@@ -97,6 +102,10 @@ export default function IndividualProfilePage() {
   const [isUploadingCv, setIsUploadingCv] = useState(false);
   const [cvMessage, setCvMessage] = useState<string | null>(null);
   const [cvError, setCvError] = useState<string | null>(null);
+
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarMessage, setAvatarMessage] = useState<string | null>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -121,6 +130,7 @@ export default function IndividualProfilePage() {
       if (res.ok && data.profile) {
         const p: ProfileData = data.profile;
         setProfile(p);
+        setAvatarUrl(p.avatar_url || null);
         setFullName(p.full_name || '');
         setTitle(p.title || '');
         setBio(p.bio || '');
@@ -140,6 +150,56 @@ export default function IndividualProfilePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAvatarUpload = async (file: File) => {
+    if (!token) return;
+    setIsUploadingAvatar(true);
+    setAvatarError(null);
+    setAvatarMessage(null);
+
+    if (file.size > 5 * 1024 * 1024) {
+      setAvatarError('Image must be less than 5MB.');
+      setIsUploadingAvatar(false);
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/individual/profile/avatar', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.detail || 'Avatar upload failed');
+      }
+
+      setAvatarUrl(data.avatar_url);
+      setAvatarMessage('Profile picture updated successfully!');
+      const userStr = localStorage.getItem('user');
+      if (userStr) {
+        try {
+          const userObj = JSON.parse(userStr);
+          userObj.avatar_url = data.avatar_url;
+          localStorage.setItem('user', JSON.stringify(userObj));
+        } catch {}
+      }
+      await fetchProfile(token);
+    } catch (err: any) {
+      setAvatarError(err.message || 'Failed to upload profile picture.');
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleAvatarUpload(file);
   };
 
   useEffect(() => {
@@ -260,26 +320,6 @@ export default function IndividualProfilePage() {
         <div className="w-[500px] h-[500px] bg-red-600/[0.05] blur-[140px] animate-aurora-red rounded-full absolute bottom-0 -right-20" />
       </div>
 
-      {/* Header */}
-      <header className="relative z-10 border-b border-white/10">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-white/90 via-white/70 to-white/40 flex items-center justify-center text-black font-mono font-black text-xs">
-              E
-            </div>
-            <span className="font-mono font-bold tracking-tight text-white text-sm">EJICODE_AI</span>
-          </Link>
-          {readyForDiscovery && (
-            <Link
-              href="/individual/dashboard"
-              className="text-xs text-zinc-400 hover:text-white transition-colors flex items-center gap-1.5"
-            >
-              Skip to dashboard
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          )}
-        </div>
-      </header>
 
       <main className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
         <div className="mb-8">
@@ -325,6 +365,96 @@ export default function IndividualProfilePage() {
               </div>
               <div className="text-xs font-mono text-zinc-400">
                 {profile?.completion_percentage ?? 0}% complete
+              </div>
+            </div>
+
+            {/* Profile Picture Upload */}
+            <div className="apple-glass rounded-3xl p-6 sm:p-8">
+              <div className="flex items-center gap-2.5 mb-1">
+                <Camera className="w-4 h-4 text-red-400" />
+                <h2 className="text-sm font-bold text-white uppercase tracking-wide">Candidate Profile Picture</h2>
+              </div>
+              <p className="text-xs text-zinc-500 mb-5">
+                Upload your authentic profile photo. It appears on your real-time candidate dashboard and is linked across your hiring materials.
+              </p>
+
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={handleAvatarChange}
+              />
+
+              <div className="flex flex-col sm:flex-row items-center gap-6 p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                {/* Avatar Preview */}
+                <div className="relative group shrink-0">
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt="Profile Avatar"
+                      className="w-24 h-24 rounded-full object-cover border-2 border-red-500/60 shadow-xl shadow-red-500/20"
+                    />
+                  ) : (
+                    <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-red-600 to-rose-400 flex items-center justify-center font-bold text-white text-3xl shadow-xl shadow-red-600/20">
+                      {(fullName || 'U').charAt(0).toUpperCase()}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => avatarInputRef.current?.click()}
+                    disabled={isUploadingAvatar}
+                    className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold backdrop-blur-xs cursor-pointer"
+                  >
+                    <Camera className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Upload Action */}
+                <div className="flex-1 text-center sm:text-left space-y-2">
+                  <div className="text-sm font-semibold text-white">
+                    {avatarUrl ? 'Profile Picture Active' : 'No custom photo uploaded yet'}
+                  </div>
+                  <div className="text-xs text-zinc-400">
+                    Supports JPG, PNG, or WebP up to 5MB. Stored and rendered in real-time.
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-center sm:justify-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => avatarInputRef.current?.click()}
+                      disabled={isUploadingAvatar}
+                      className="px-4 py-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-rose-600 hover:to-red-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-md shadow-red-600/30 transition-all cursor-pointer"
+                    >
+                      {isUploadingAvatar ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Uploading…</span>
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud className="w-3.5 h-3.5" />
+                          <span>{avatarUrl ? 'Change Photo' : 'Upload Real Photo'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {avatarMessage && (
+                    <div className="text-xs text-emerald-400 flex items-center gap-1.5 pt-1">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>{avatarMessage}</span>
+                    </div>
+                  )}
+
+                  {avatarError && (
+                    <div className="text-xs text-rose-400 flex items-center gap-1.5 pt-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{avatarError}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

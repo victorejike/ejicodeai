@@ -627,6 +627,7 @@ async def me(
                 "organization_id": str(db_user.organization_id) if db_user.organization_id else None,
                 "organization": org_data,
                 "roles": db_user.roles or ["user"],
+                "avatar_url": getattr(db_user, "avatar_url", None),
                 "is_active": db_user.is_active,
                 "is_superuser": db_user.is_superuser,
                 "created_at": db_user.created_at.isoformat() if db_user.created_at else None,
@@ -637,6 +638,7 @@ async def me(
     return {
         "username": current_user.username,
         "email": current_user.email or f"{current_user.username}@ejicode.com",
+        "avatar_url": getattr(current_user, "avatar_url", None),
         "account_type": current_user.account_type,
         "organization_id": current_user.organization_id,
         "roles": current_user.roles,

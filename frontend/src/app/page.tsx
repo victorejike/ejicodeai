@@ -25,6 +25,7 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
+import { useSession } from '@/lib/useSession';
 
 interface PublicMetrics {
   total_opportunities_indexed: number;
@@ -132,6 +133,8 @@ export default function HomePage() {
   // so the UI renders an honest loading/empty state instead of fake numbers.
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null);
   const [metricsError, setMetricsError] = useState(false);
+  const { user, profile, avatarUrl, displayName, firstName, completion } = useSession();
+  const isLoggedIn = Boolean(user?.email || displayName || avatarUrl);
 
   useEffect(() => {
     fetch('/api/public/statistics')
@@ -165,11 +168,21 @@ export default function HomePage() {
       <header className="fixed top-5 inset-x-0 mx-auto max-w-5xl z-50 px-4">
         <div className="apple-glass-pill px-5 py-3 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-3 group shrink-0">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-white/90 via-white/70 to-white/40 flex items-center justify-center text-black font-mono font-black text-xs shadow-md shadow-white/10 group-hover:scale-105 transition-transform">
-              E
-            </div>
+            {isLoggedIn && avatarUrl ? (
+              <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-red-500/80 shadow-[0_0_15px_rgba(239,68,68,0.5)] ring-2 ring-red-500/20 group-hover:scale-105 transition-transform">
+                <img src={avatarUrl} alt={displayName || 'Profile'} className="w-full h-full object-cover" />
+              </div>
+            ) : isLoggedIn && displayName ? (
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-red-600 via-rose-500 to-amber-500 flex items-center justify-center text-white font-mono font-black text-xs shadow-[0_0_15px_rgba(239,68,68,0.4)] ring-2 ring-red-500/20 group-hover:scale-105 transition-transform">
+                {(firstName || displayName).charAt(0).toUpperCase()}
+              </div>
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-white/90 via-white/70 to-white/40 flex items-center justify-center text-black font-mono font-black text-xs shadow-md shadow-white/10 group-hover:scale-105 transition-transform">
+                E
+              </div>
+            )}
             <span className="font-mono font-bold tracking-tight text-white text-sm hidden sm:inline">
-              EJICODE_AI
+              {isLoggedIn && displayName ? displayName : 'EJICODE_AI'}
             </span>
           </Link>
 
@@ -181,18 +194,41 @@ export default function HomePage() {
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
-            <Link
-              href="/login?type=individual"
-              className="px-3 py-1.5 text-xs text-zinc-300 hover:text-white transition-colors whitespace-nowrap"
-            >
-              Login &middot; Individual
-            </Link>
-            <Link
-              href="/login?type=enterprise"
-              className="apple-button-primary px-4 py-1.5 text-xs font-semibold whitespace-nowrap"
-            >
-              Login &middot; Enterprise
-            </Link>
+            {isLoggedIn ? (
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/individual/profile"
+                  className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full apple-glass-subtle text-xs text-zinc-300 hover:text-white transition-all border border-zinc-700/60"
+                >
+                  {avatarUrl && (
+                    <img src={avatarUrl} alt="Avatar" className="w-4 h-4 rounded-full object-cover border border-red-400" />
+                  )}
+                  <span className="truncate max-w-[120px] font-medium">{displayName || 'My Profile'}</span>
+                </Link>
+                <Link
+                  href={user?.account_type === 'enterprise' ? '/enterprise/dashboard' : '/individual/dashboard'}
+                  className="apple-button-primary px-4 py-1.5 text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 shadow-[0_0_15px_rgba(239,68,68,0.35)]"
+                >
+                  <span>Career Hub</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
+            ) : (
+              <>
+                <Link
+                  href="/login?type=individual"
+                  className="px-3 py-1.5 text-xs text-zinc-300 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Login &middot; Individual
+                </Link>
+                <Link
+                  href="/login?type=enterprise"
+                  className="apple-button-primary px-4 py-1.5 text-xs font-semibold whitespace-nowrap"
+                >
+                  Login &middot; Enterprise
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -216,6 +252,79 @@ export default function HomePage() {
             hiring requirement, searches live sources, validates what it finds, and explains every match with
             evidence. Nothing invented, nothing hidden.
           </p>
+
+          {/* LOGGED IN WITH YOUR PROFILE - HERO CARD */}
+          {isLoggedIn && (
+            <div className="mt-10 max-w-2xl mx-auto apple-glass rounded-3xl p-6 sm:p-7 border border-red-500/40 shadow-[0_0_40px_rgba(239,68,68,0.28)] animate-fade-in-up text-left">
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+                <div className="relative shrink-0">
+                  <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-red-500 shadow-[0_0_22px_rgba(239,68,68,0.55)] ring-4 ring-red-500/20">
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={displayName || 'Profile Avatar'}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-tr from-red-600 via-rose-500 to-amber-500 flex items-center justify-center text-white font-mono font-black text-2xl">
+                        {(firstName || displayName || 'U').charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <span
+                    className="absolute bottom-0.5 right-0.5 w-5 h-5 rounded-full bg-emerald-500 border-2 border-black shadow-[0_0_10px_rgba(16,185,129,0.9)]"
+                    title="Active Session"
+                  />
+                </div>
+
+                <div className="flex-1 text-center sm:text-left min-w-0">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-[11px] font-bold text-red-400 mb-2 shadow-[0_0_12px_rgba(239,68,68,0.2)]">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    Logged in with your profile
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight truncate">
+                    {displayName || user?.full_name || 'Candidate Member'}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-zinc-300 mt-1 truncate">
+                    {profile?.title || 'Verified Professional Profile'} {user?.email ? `• ${user.email}` : ''}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                    <span className="apple-glass-subtle px-3 py-1 rounded-full text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 text-xs font-semibold">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      {completion?.percent !== undefined
+                        ? `Profile ${completion.percent}% complete`
+                        : 'Profile Active'}
+                    </span>
+                    <span className="apple-glass-subtle px-3 py-1 rounded-full text-zinc-300 border border-zinc-700/80 font-mono text-[11px]">
+                      {user?.account_type === 'enterprise' ? 'Role: Enterprise' : 'Role: Individual Candidate'}
+                    </span>
+                    {completion?.agent_ready && (
+                      <span className="apple-glass-subtle px-2.5 py-1 rounded-full text-blue-400 border border-blue-500/30 text-[11px] font-medium">
+                        Agents Ready
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap items-center justify-center sm:justify-start gap-3">
+                    <Link
+                      href={user?.account_type === 'enterprise' ? '/enterprise/dashboard' : '/individual/dashboard'}
+                      className="apple-button-primary px-5 py-2.5 text-xs font-semibold flex items-center gap-2 shadow-[0_0_20px_rgba(239,68,68,0.4)] hover:shadow-[0_0_25px_rgba(239,68,68,0.6)]"
+                    >
+                      <span>Continue to Career Hub</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </Link>
+                    <Link
+                      href="/individual/profile"
+                      className="apple-glass-subtle hover:bg-white/10 px-4 py-2.5 rounded-full text-xs font-medium text-zinc-300 hover:text-white transition-all border border-zinc-700/70"
+                    >
+                      Manage Profile &amp; Photo
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* DUAL PATH SELECTOR */}
@@ -247,19 +356,31 @@ export default function HomePage() {
             </ul>
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <Link
-                href="/login?type=individual"
-                className="apple-button-primary px-6 py-3 text-xs font-semibold flex items-center gap-2"
-              >
-                <Briefcase className="w-4 h-4" />
-                <span>Login as Individual</span>
-              </Link>
-              <Link
-                href="/register?type=individual"
-                className="text-xs text-zinc-300 hover:text-white underline underline-offset-2 transition-colors"
-              >
-                Create free account
-              </Link>
+              {isLoggedIn ? (
+                <Link
+                  href="/individual/dashboard"
+                  className="apple-button-primary px-6 py-3 text-xs font-semibold flex items-center gap-2 shadow-[0_0_15px_rgba(59,130,246,0.3)]"
+                >
+                  <Briefcase className="w-4 h-4 text-blue-400" />
+                  <span>Enter Career Hub &rarr;</span>
+                </Link>
+              ) : (
+                <>
+                  <Link
+                    href="/login?type=individual"
+                    className="apple-button-primary px-6 py-3 text-xs font-semibold flex items-center gap-2"
+                  >
+                    <Briefcase className="w-4 h-4" />
+                    <span>Login as Individual</span>
+                  </Link>
+                  <Link
+                    href="/register?type=individual"
+                    className="text-xs text-zinc-300 hover:text-white underline underline-offset-2 transition-colors"
+                  >
+                    Create free account
+                  </Link>
+                </>
+              )}
             </div>
           </div>
 
@@ -290,19 +411,31 @@ export default function HomePage() {
             </ul>
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <Link
-                href="/login?type=enterprise"
-                className="apple-button-secondary px-6 py-3 text-xs font-semibold flex items-center gap-2"
-              >
-                <Building2 className="w-4 h-4" />
-                <span>Login as Enterprise</span>
-              </Link>
-              <Link
-                href="/register?type=enterprise"
-                className="text-xs text-zinc-300 hover:text-white underline underline-offset-2 transition-colors"
-              >
-                Create organization account
-              </Link>
+              {isLoggedIn ? (
+                <Link
+                  href="/enterprise/dashboard"
+                  className="apple-button-secondary px-6 py-3 text-xs font-semibold flex items-center gap-2"
+                >
+                  <Building2 className="w-4 h-4 text-emerald-400" />
+                  <span>Enter Enterprise Pipeline &rarr;</span>
+                </Link>
+              ) : (
+                <>
+                  <Link
+                    href="/login?type=enterprise"
+                    className="apple-button-secondary px-6 py-3 text-xs font-semibold flex items-center gap-2"
+                  >
+                    <Building2 className="w-4 h-4" />
+                    <span>Login as Enterprise</span>
+                  </Link>
+                  <Link
+                    href="/register?type=enterprise"
+                    className="text-xs text-zinc-300 hover:text-white underline underline-offset-2 transition-colors"
+                  >
+                    Create organization account
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>

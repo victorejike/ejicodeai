@@ -71,7 +71,7 @@ class EventBus:
         try:
             # First send recent history for instant context
             async with self._lock:
-                recent_copy = list(self._history[-20:])
+                recent_copy = list(self._history[-60:])
 
             for past_event in recent_copy:
                 if self._matches_filter(past_event, user_id, organization_id):

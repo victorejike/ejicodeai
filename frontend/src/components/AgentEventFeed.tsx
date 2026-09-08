@@ -155,23 +155,141 @@ export default function AgentEventFeed({
 
   const renderPayload = (payload: any) => {
     if (!payload || typeof payload !== 'object') return null;
-    const entries = Object.entries(payload).filter(([, v]) => {
-      if (v === null || v === undefined || v === '') return false;
-      if (Array.isArray(v)) return v.length > 0;
-      if (typeof v === 'object') return Object.keys(v as object).length > 0;
-      return true;
+
+    const chips: { label: string; value: string; highlight?: boolean }[] = [];
+
+    // 1. Execution / Run ID
+    if (payload.execution_id) {
+      const idStr = String(payload.execution_id);
+      chips.push({
+        label: 'run',
+        value: `#${idStr.slice(0, 8)}`,
+      });
+    }
+
+    // 2. Stage progress
+    if (payload.stage_index !== undefined && payload.stage_total) {
+      chips.push({
+        label: 'progress',
+        value: `${Number(payload.stage_index) + 1}/${payload.stage_total}`,
+      });
+    }
+
+    // 3. Stages list
+    if (Array.isArray(payload.stages) && payload.stages.length > 0) {
+      chips.push({
+        label: 'stages',
+        value: `${payload.stages.length} executed`,
+      });
+    }
+
+    // 4. Produced items
+    if (payload.produced && typeof payload.produced === 'object') {
+      Object.entries(payload.produced).forEach(([k, v]) => {
+        if (typeof v === 'number' && v > 0) {
+          chips.push({
+            label: 'output',
+            value: `${v} ${k.replace(/_/g, ' ')}`,
+            highlight: true,
+          });
+        }
+      });
+    }
+
+    // 5. Received items
+    if (payload.received && typeof payload.received === 'object') {
+      Object.entries(payload.received).forEach(([k, v]) => {
+        if (typeof v === 'number' && v > 0) {
+          chips.push({
+            label: 'input',
+            value: `${v} ${k.replace(/_/g, ' ')}`,
+          });
+        }
+      });
+    }
+
+    // 6. Side effects
+    if (payload.effects && typeof payload.effects === 'object') {
+      Object.entries(payload.effects).forEach(([_, stats]) => {
+        if (stats && typeof stats === 'object') {
+          Object.entries(stats as Record<string, any>).forEach(([subK, subV]) => {
+            if (subV !== null && subV !== undefined && subV !== 0 && subV !== '') {
+              const cleanKey = subK.replace(/_/g, ' ');
+              let formattedVal = String(subV);
+              if (subK.includes('score')) formattedVal = `${subV}%`;
+              chips.push({
+                label: cleanKey,
+                value: formattedVal,
+                highlight:
+                  subK.includes('score') ||
+                  subK.includes('created') ||
+                  subK.includes('saved') ||
+                  subK.includes('updated'),
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // 7. General properties
+    const handledKeys = new Set([
+      'execution_id',
+      'stages',
+      'effects',
+      'produced',
+      'received',
+      'stage_index',
+      'stage_total',
+    ]);
+
+    Object.entries(payload).forEach(([k, v]) => {
+      if (handledKeys.has(k)) return;
+      if (v === null || v === undefined || v === '') return;
+
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        chips.push({
+          label: k.replace(/_/g, ' '),
+          value: String(v),
+        });
+      } else if (Array.isArray(v)) {
+        if (v.length > 0) {
+          chips.push({
+            label: k.replace(/_/g, ' '),
+            value: `${v.length} items`,
+          });
+        }
+      } else if (typeof v === 'object') {
+        const subEntries = Object.entries(v);
+        if (subEntries.length > 0 && subEntries.length <= 3) {
+          subEntries.forEach(([subK, subV]) => {
+            if (typeof subV === 'string' || typeof subV === 'number') {
+              chips.push({
+                label: `${k}.${subK}`.replace(/_/g, ' '),
+                value: String(subV),
+              });
+            }
+          });
+        }
+      }
     });
-    if (entries.length === 0) return null;
+
+    if (chips.length === 0) return null;
 
     return (
-      <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px]">
-        {entries.slice(0, 8).map(([k, v]) => (
+      <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px]">
+        {chips.slice(0, 8).map((chip, idx) => (
           <span
-            key={k}
-            className="rounded border border-[var(--border)] bg-[var(--glass-subtle-bg)] px-1.5 py-0.5"
+            key={idx}
+            className={cx(
+              'inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono transition-colors',
+              chip.highlight
+                ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                : 'border-white/10 bg-white/[0.04] text-zinc-300'
+            )}
           >
-            <span className="text-[var(--text-muted)]">{k.replace(/_/g, ' ')}:</span>{' '}
-            {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+            <span className="text-zinc-500">{chip.label}:</span>
+            <span className="font-semibold">{chip.value}</span>
           </span>
         ))}
       </div>
@@ -242,7 +360,7 @@ export default function AgentEventFeed({
             events.map((ev, i) => (
               <div
                 key={ev.id || i}
-                className="flex items-start gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--glass-subtle-bg)] p-2.5 transition-colors hover:border-[var(--border-red)]"
+                className="flex items-start gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--glass-subtle-bg)] p-2.5 transition-colors hover:border-white/20 hover:bg-white/[0.04]"
               >
                 <span className="mt-0.5">
                   {ev.severity === 'success' ? (

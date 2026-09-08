@@ -12,6 +12,7 @@ export interface SessionUser {
   organization_id?: string | null;
   organization?: { id: string; name: string; slug: string; plan: string } | null;
   roles?: string[];
+  avatar_url?: string | null;
   is_active?: boolean;
   is_superuser?: boolean;
 }
@@ -19,6 +20,7 @@ export interface SessionUser {
 export interface CandidateProfile {
   id: string;
   user_id: string;
+  avatar_url?: string | null;
   full_name: string | null;
   title: string | null;
   bio: string | null;
@@ -52,6 +54,7 @@ export interface Session {
   /** Preferred greeting name, or null - never a placeholder. */
   firstName: string | null;
   displayName: string | null;
+  avatarUrl: string | null;
   accountType: string | null;
   /** True once the backend says the agents may run for this user. */
   agentReady: boolean;
@@ -70,33 +73,39 @@ export interface Session {
  * so the greeting, the checklist and the disabled buttons always agree.
  */
 export function useSession(): Session {
-  const me = useSWR<SessionUser>('/api/auth/me', fetcher, {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const me = useSWR<SessionUser>(token ? '/api/auth/me' : null, fetcher, {
     revalidateOnFocus: false,
     shouldRetryOnError: false,
   });
   const profileRes = useSWR<{ profile: CandidateProfile; profile_completion: ProfileCompletion }>(
-    '/api/individual/profile',
+    token ? '/api/individual/profile' : null,
     fetcher,
     { revalidateOnFocus: false, shouldRetryOnError: false }
   );
 
   const completion = profileRes.data?.profile_completion ?? null;
   const user = me.data ?? null;
+  const profile = profileRes.data?.profile ?? null;
+  const avatarUrl = profile?.avatar_url || user?.avatar_url || null;
 
   return {
     user,
-    profile: profileRes.data?.profile ?? null,
+    profile,
     completion,
     firstName: completion?.first_name ?? null,
     displayName: completion?.display_name ?? user?.full_name ?? null,
+    avatarUrl,
     accountType: user?.account_type ?? null,
     agentReady: Boolean(completion?.agent_ready),
-    loading: (!me.data && !me.error) || (!profileRes.data && !profileRes.error),
+    loading: token ? (!me.data && !me.error) || (!profileRes.data && !profileRes.error) : false,
     error: me.error ?? profileRes.error ?? null,
     gateReason: completion && !completion.agent_ready ? completion.reasons.join(' ') : null,
     refresh: () => {
-      me.mutate();
-      profileRes.mutate();
+      if (token) {
+        me.mutate();
+        profileRes.mutate();
+      }
     },
   };
 }

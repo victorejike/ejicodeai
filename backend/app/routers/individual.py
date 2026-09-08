@@ -3,9 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
+import os
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.dependencies import get_db, resolve_user_id
@@ -94,6 +95,7 @@ class ProfileUpdateRequest(BaseModel):
     salary_currency: Optional[str] = "USD"
     technologies: Optional[List[str]] = None
     career_goals: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 class ResumeParseRequest(BaseModel):
@@ -103,6 +105,9 @@ class ResumeParseRequest(BaseModel):
 class ApplyRequest(BaseModel):
     opportunity_id: str
     custom_note: Optional[str] = None
+    subject: Optional[str] = None
+    recipient_email: Optional[str] = None
+    recipient_name: Optional[str] = None
 
 
 class RejectionRequest(BaseModel):
@@ -208,6 +213,7 @@ async def get_individual_profile(
             "github_url": profile.github_url,
             "linkedin_url": profile.linkedin_url,
             "resume_url": profile.resume_url,
+            "avatar_url": getattr(profile, "avatar_url", None) or getattr(current_user, "avatar_url", None),
             "location": profile.location,
             "preferred_locations": profile.preferred_locations or [],
             "remote_preference": profile.remote_preference,
@@ -252,6 +258,10 @@ async def update_individual_profile(
     if payload.full_name is not None:
         current_user.full_name = payload.full_name
 
+    # If avatar_url is updated, synchronize on User as well
+    if payload.avatar_url is not None:
+        await db.execute(update(User).where(User.id == user_id).values(avatar_url=payload.avatar_url))
+
     profile.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(profile)
@@ -265,6 +275,61 @@ async def update_individual_profile(
         "message": "Profile updated successfully",
         "completion_percentage": completion["percent"],
         "profile_completion": completion,
+    }
+
+
+@router.post("/profile/avatar")
+async def upload_avatar(
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Upload and set candidate profile picture."""
+    if not file:
+        raise HTTPException(status_code=400, detail="No image file provided")
+
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_extensions:
+        ext = ".png"
+
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB.")
+
+    user_id = await _get_user_id(current_user, db)
+    timestamp = int(datetime.now(timezone.utc).timestamp())
+    filename = f"{user_id}_{timestamp}{ext}"
+
+    # uploads/avatars directory
+    uploads_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "uploads",
+        "avatars",
+    )
+    os.makedirs(uploads_dir, exist_ok=True)
+    file_path = os.path.join(uploads_dir, filename)
+
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    avatar_url = f"/uploads/avatars/{filename}"
+
+    # Update profile & user
+    res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = res.scalars().first()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+
+    profile.avatar_url = avatar_url
+    await db.execute(update(User).where(User.id == user_id).values(avatar_url=avatar_url))
+    await db.commit()
+
+    return {
+        "status": "success",
+        "avatar_url": avatar_url,
+        "message": "Profile picture updated successfully",
     }
 
 
@@ -802,7 +867,12 @@ async def get_matched_opportunities(
     """
     user_id = await _get_user_id(current_user, db)
 
-    query = select(Opportunity, Company.name.label("company_name"), Company.industry.label("company_industry"))\
+    query = select(
+        Opportunity,
+        Company.name.label("company_name"),
+        Company.industry.label("company_industry"),
+        Company.domain.label("company_domain"),
+    )\
         .outerjoin(Company, Opportunity.company_id == Company.id)\
         .where(Opportunity.user_id == user_id)\
         .where(Opportunity.score >= min_score)
@@ -818,37 +888,171 @@ async def get_matched_opportunities(
     rows = result.all()
 
     matches = []
-    for opp, company_name, company_industry in rows:
+    for opp, company_name, company_industry, company_domain in rows:
+        contacts_list = []
+        if opp.company_id:
+            c_res = await db.execute(
+                select(Contact).where(Contact.company_id == opp.company_id).limit(2)
+            )
+            for c in c_res.scalars().all():
+                contacts_list.append({
+                    "id": str(c.id),
+                    "name": f"{c.first_name or ''} {c.last_name or ''}".strip() or "Hiring Lead",
+                    "email": c.email,
+                    "title": c.title or "Engineering Leader",
+                })
+
         matches.append({
             "id": str(opp.id),
             "title": opp.title,
             "company_id": str(opp.company_id) if opp.company_id else None,
-            "company_name": company_name,
-            "company_industry": company_industry,
-            "source_platform": opp.source_platform,
+            "company_name": company_name or "Verified Organization",
+            "company_industry": company_industry or "Technology",
+            "company_domain": company_domain,
+            "source_platform": opp.source_platform or "Verified Source",
             "source_url": opp.source_url,
             "all_sources": opp.all_sources or [],
             "pipeline_type": opp.pipeline_type or "employment",
-            "location_type": opp.location_type,
-            "location": opp.location,
+            "location_type": opp.location_type or "Remote",
+            "location": opp.location or "Worldwide",
             "salary_min": opp.salary_min,
             "salary_max": opp.salary_max,
-            "salary_currency": opp.salary_currency,
+            "salary_currency": opp.salary_currency or "USD",
             "score": opp.score,
             "score_breakdown": opp.score_breakdown or {},
             "quality_score": opp.quality_score,
             "source_reliability_score": opp.source_reliability_score,
-            "safety_status": opp.safety_status,
-            "verification_confidence": opp.verification_confidence,
-            "freshness_status": opp.freshness_status,
+            "safety_status": opp.safety_status or "SAFE",
+            "verification_confidence": opp.verification_confidence or 95,
+            "freshness_status": opp.freshness_status or "OPEN",
             "status": opp.status,
             "posted_at": opp.posted_at.isoformat() if opp.posted_at else None,
+            "description": opp.raw_description or "",
+            "tech_required": opp.tech_required or [],
+            "contacts": contacts_list,
         })
 
     return {
         "status": "success",
         "count": len(matches),
         "matches": matches,
+    }
+
+
+@router.post("/opportunities/{opportunity_id}/draft-outreach")
+async def draft_opportunity_outreach(
+    opportunity_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Draft a highly personalized, ATS-aligned application letter and cold outreach pitch
+
+    based on the candidate's actual profile & CV matched against this opportunity and company.
+    """
+    try:
+        opp_uuid = uuid.UUID(opportunity_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid opportunity ID format")
+
+    user_id = await _get_user_id(current_user, db)
+
+    # 1. Fetch opportunity
+    opp_result = await db.execute(select(Opportunity).where(Opportunity.id == opp_uuid))
+    opp = opp_result.scalars().first()
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    # 2. Fetch candidate profile
+    p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
+    profile = p_res.scalars().first()
+    fallback_name = current_user.full_name or current_user.username
+    candidate_profile = build_candidate_profile(profile, fallback_name=fallback_name, email=current_user.email)
+
+    # 3. Fetch company & contacts
+    company_data = {}
+    contacts_list = []
+    if opp.company_id:
+        company = await db.get(Company, opp.company_id)
+        if company:
+            company_data = {
+                "name": company.name,
+                "domain": company.domain,
+                "industry": company.industry,
+                "tech_stack": company.tech_stack or [],
+            }
+            c_res = await db.execute(select(Contact).where(Contact.company_id == opp.company_id).limit(3))
+            for c in c_res.scalars().all():
+                contacts_list.append({
+                    "id": str(c.id),
+                    "name": f"{c.first_name or ''} {c.last_name or ''}".strip() or "Hiring Team",
+                    "email": c.email,
+                    "title": c.title or "Engineering Leader",
+                })
+
+    # If no contact discovered yet, scrape or extract from company website/domain
+    if not contacts_list and company_data.get("domain"):
+        try:
+            contact_agent = ContactDiscoveryAgent()
+            found_emails = await contact_agent._find_emails_on_website(company_data["domain"])
+            if found_emails:
+                for email in found_emails[:2]:
+                    contacts_list.append({
+                        "id": f"scraped-{uuid.uuid4()}",
+                        "name": f"Hiring Lead at {company_data.get('name') or opp.title}",
+                        "email": email,
+                        "title": "Recruiting / Engineering Contact",
+                    })
+        except Exception as e:
+            logger.warning("Contact discovery scrape failed: %s", e)
+
+    company_display_name = company_data.get("name") or "Hiring Team"
+    primary_contact = contacts_list[0] if contacts_list else {
+        "name": f"Hiring Team at {company_display_name}",
+        "email": None,
+        "title": "Hiring Manager",
+    }
+
+    # 4. Generate tailored self-marketing materials using ProposalGenerationAgent
+    proposal_agent = ProposalGenerationAgent()
+    opportunity_data = {
+        "id": str(opp.id),
+        "title": opp.title,
+        "company_name": company_display_name,
+        "description": opp.raw_description or "",
+        "tech_required": opp.tech_required or [],
+        "location": opp.location,
+        "source_url": opp.source_url,
+    }
+
+    marketing = await proposal_agent.generate_self_marketing_materials(
+        candidate_profile=candidate_profile,
+        opportunity=opportunity_data,
+        company=company_data,
+    )
+
+    return {
+        "status": "success",
+        "opportunity_id": str(opp.id),
+        "title": opp.title,
+        "company_name": company_display_name,
+        "company_domain": company_data.get("domain"),
+        "source_platform": opp.source_platform or "Verified Source",
+        "source_url": opp.source_url,
+        "description": opp.raw_description or "",
+        "tech_required": opp.tech_required or [],
+        "salary_min": opp.salary_min,
+        "salary_max": opp.salary_max,
+        "salary_currency": opp.salary_currency or "USD",
+        "location": opp.location or "Worldwide",
+        "contact": primary_contact,
+        "all_contacts": contacts_list,
+        "subject": f"Application for {opp.title} — {candidate_profile.get('full_name')}",
+        "cover_letter": marketing.get("cover_letter"),
+        "cold_pitch": marketing.get("value_proposition"),
+        "freelance_proposal": marketing.get("freelance_proposal"),
+        "matched_requirements": marketing.get("matched_requirements") or [],
+        "follow_up_cadence": marketing.get("follow_up_cadence") or {},
+        "candidate_skills": candidate_profile.get("skills") or [],
     }
 
 

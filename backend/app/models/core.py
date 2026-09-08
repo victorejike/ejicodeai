@@ -149,6 +149,7 @@ class UserProfile(Base):
     github_url = Column(Text)
     linkedin_url = Column(Text)
     resume_url = Column(Text)
+    avatar_url = Column(Text)
     certifications = Column(JSON, default=list)
     location = Column(String(255))
     preferred_locations = Column(JSON, default=list)

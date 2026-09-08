@@ -21,6 +21,7 @@ outreach stays a separate, explicitly approved step.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -70,6 +71,45 @@ STAGE_LABELS: Dict[str, str] = {
     "cv_builder": "Building your ATS CV",
     "contact": "Finding hiring contacts",
     "proposal": "Drafting your outreach",
+}
+
+STAGE_MILESTONES: Dict[str, List[str]] = {
+    "profile_analyzer": [
+        "Analyzing candidate CV, seniority profile, and verified technical competencies...",
+        "Clustering transferable skills, market positioning, and target role variants...",
+    ],
+    "discovery": [
+        "Broadcasting live queries to RemoteOK, Remotive, Jobicy, and Hacker News APIs...",
+        "Aggregating live remote listings matching candidate search terms and tech stack...",
+    ],
+    "extraction": [
+        "Extracting deep role briefs, technical requirements, and responsibilities...",
+        "Standardizing compensation packages, work authorizations, and location parameters...",
+    ],
+    "validation": [
+        "Running anti-scam shield and verifying hiring company domain credibility...",
+        "Verifying live URL health, posting freshness, and calculating source reliability scores...",
+    ],
+    "deduplication": [
+        "Generating cross-platform job fingerprints and identifying syndicated listings...",
+        "Merging duplicate multi-channel postings into single verified canonical opportunities...",
+    ],
+    "matching": [
+        "Executing 6-factor alignment engine: Skills, Experience, Location, Salary, Stack, Culture...",
+        "Computing ATS alignment scores and ranking highest-fit opportunities...",
+    ],
+    "cv_builder": [
+        "Synthesizing customized ATS-optimized CV variant tailored to top matching opportunities...",
+        "Calibrating keyword density and aligning achievement metrics with target job briefs...",
+    ],
+    "contact": [
+        "Scraping employer domains for engineering decision-makers and hiring leadership...",
+        "Verifying executive email patterns and validating direct outreach channels...",
+    ],
+    "proposal": [
+        "Drafting personalized, high-converting application letter and tailored outreach pitch...",
+        "Configuring automated Day 3, 7, and 14 follow-up cadences and proposal collateral...",
+    ],
 }
 
 
@@ -232,6 +272,23 @@ class CareerPipeline:
                 user_id=str(user_id),
             )
 
+            milestones = STAGE_MILESTONES.get(stage, [])
+            if len(milestones) >= 1:
+                await emit(
+                    "agent.progress",
+                    milestones[0],
+                    payload={
+                        "agent": stage,
+                        "stage": stage,
+                        "stage_index": index,
+                        "step": 1,
+                        "step_total": len(milestones),
+                        "execution_id": execution_id,
+                    },
+                    user_id=str(user_id),
+                )
+                await asyncio.sleep(4.5)
+
             runner = self._runner(stage)
             try:
                 result = await runner(state)
@@ -245,6 +302,22 @@ class CareerPipeline:
 
             status = (result or {}).get("status")
             output = dict((result or {}).get("output_data") or {})
+
+            if len(milestones) >= 2 and status not in (AgentStatus.FAILURE, AgentStatus.ESCALATED):
+                await emit(
+                    "agent.progress",
+                    milestones[1],
+                    payload={
+                        "agent": stage,
+                        "stage": stage,
+                        "stage_index": index,
+                        "step": 2,
+                        "step_total": len(milestones),
+                        "execution_id": execution_id,
+                    },
+                    user_id=str(user_id),
+                )
+                await asyncio.sleep(4.5)
 
             if status in (AgentStatus.FAILURE, AgentStatus.ESCALATED):
                 escalated = status == AgentStatus.ESCALATED
